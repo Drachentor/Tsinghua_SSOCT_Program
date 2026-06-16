@@ -1,0 +1,30 @@
+<RCC>
+    <qresource prefix="/new/prefix1">
+        <file alias="start2.png">pictures/start2.png</file>
+        <file alias="background.png">pictures/background.png</file>
+        <file alias="background2.png">pictures/background2.png</file>
+        <file alias="connect.png">pictures/connect.png</file>
+        <file alias="disconnect.png">pictures/disconnect.png</file>
+        <file alias="fit.png">pictures/fit.png</file>
+        <file alias="iconSave.png">pictures/iconSave.png</file>
+        <file alias="start.png">pictures/start.png</file>
+        <file alias="stopFinish.png">pictures/stopFinish.png</file>
+        <file alias="stopInitial.png">pictures/stopInitial.png</file>
+        <file alias="windowsicon.jpg">pictures/windowsicon.jpg</file>
+        <file alias="60.png">pictures/60.png</file>
+        <file alias="85.png">pictures/85.png</file>
+        <file alias="84.png">pictures/84.png</file>
+        <file alias="right.png">pictures/right.png</file>
+        <file alias="left.png">pictures/left.png</file>
+        <file alias="left_pressed.png">pictures/left_pressed.png</file>
+        <file alias="right_pressed.png">pictures/right_pressed.png</file>
+        <file alias="addWindow.png">pictures/addWindow.png</file>
+        <file alias="removeWindow.png">pictures/removeWindow.png</file>
+    </qresource>
+    <qresource prefix="/sty">
+        <file>style.qss</file>
+    </qresource>
+    <qresource prefix="/translations">
+        <file alias="qtbase_zh_CN.qm">translations/qtbase_zh_CN.qm</file>
+    </qresource>
+</RCC>

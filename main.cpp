@@ -1,16 +1,23 @@
 #include "mainwidget.h"
 #include "VesselProjectionProcessor.h"
+#include "DeviceSettings.h"
 #include <QApplication>
 #include <QCoreApplication>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QFont>
+#include <QFormLayout>
+#include <QLabel>
 #include <QSettings>
 #include <QStringList>
 #include <QTextCodec>
 #include <QTextStream>
 #include <QTranslator>
+#include <QVBoxLayout>
 
 namespace {
 
@@ -63,6 +70,60 @@ QString defaultSettingsPath()
         return appSettings;
     }
     return QDir::current().absoluteFilePath(QStringLiteral("settings.ini"));
+}
+
+void addDeviceOptions(QComboBox *combo,
+                      const QVector<DeviceSettings::DeviceOption> &devices,
+                      const QString &currentDeviceId)
+{
+    int currentIndex = 0;
+    for (const DeviceSettings::DeviceOption &device : devices) {
+        combo->addItem(device.displayName, device.id);
+        if (device.id == currentDeviceId)
+            currentIndex = combo->count() - 1;
+    }
+    combo->setCurrentIndex(currentIndex);
+}
+
+bool showStartupDeviceDialog()
+{
+    QSettings settings(DeviceSettings::settingsFilePath(), QSettings::IniFormat);
+    const QString currentDacDeviceId = DeviceSettings::selectedDacDeviceId(settings);
+    const QString currentAdcDeviceId = DeviceSettings::selectedAdcDeviceId(settings);
+
+    QDialog dialog;
+    dialog.setWindowTitle(QStringLiteral("选择采集设备"));
+    dialog.setModal(true);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *message = new QLabel(QStringLiteral("请选择本次运行使用的 DAC 和 ADC 设备。"), &dialog);
+    message->setWordWrap(true);
+    layout->addWidget(message);
+
+    auto *form = new QFormLayout;
+    auto *dacCombo = new QComboBox(&dialog);
+    auto *adcCombo = new QComboBox(&dialog);
+    addDeviceOptions(dacCombo, DeviceSettings::supportedDacDevices(), currentDacDeviceId);
+    addDeviceOptions(adcCombo, DeviceSettings::supportedAdcDevices(), currentAdcDeviceId);
+    form->addRow(QStringLiteral("DAC 设备"), dacCombo);
+    form->addRow(QStringLiteral("ADC 设备"), adcCombo);
+    layout->addLayout(form);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         Qt::Horizontal,
+                                         &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+
+    DeviceSettings::saveSelectedDevices(settings,
+                                        dacCombo->currentData().toString(),
+                                        adcCombo->currentData().toString());
+    settings.sync();
+    return true;
 }
 
 int runConvertAngio3dCli(const QStringList &arguments)
@@ -202,6 +263,9 @@ int main(int argc, char *argv[])
         hasCliOption(arguments, QStringLiteral("--help"))) {
         return runConvertAngio3dCli(arguments);
     }
+
+    if (!showStartupDeviceDialog())
+        return 0;
 
     mainWidget w;
     w.setStyleSheet("mainWidget { background-color: black; }"

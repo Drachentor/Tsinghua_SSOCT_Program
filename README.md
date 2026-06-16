@@ -2,22 +2,24 @@
 
 ## 适用硬件模式与现有问题
 
-上次更新: Ver. 260614
+上次更新: Ver. 260616
 
 ### DAC 设备
 
 #### 声卡
 
-声卡（与 Symphonic 模式）是我们正在研究的新扫描协议，使用相对便宜的声卡代替昂贵的 DAC 进行振镜的驱动。理论上说任何声卡都可以用来输出驱动信号，但需要注意声卡的编码格式和采样率。
+声卡（与 Symphonic 模式）是我们正在研究的新扫描协议，使用相对便宜的声卡代替昂贵的 DAC 进行振镜的驱动。理论上说任何声卡都可以用来输出驱动信号，但需要注意声卡的编码格式和采样率。\
 声卡可以和任何支持声卡的 DAC 设备共同工作。
+
 目前测试的声卡：Creative - **Sound Blaster X AE-5**, 24-bit, 48000 Hz.
 
 #### FCCTEC PCIe3640
 
-北京星烁华创 (FCCTEC) - **PCIe3640** AD/DA 二合一采集卡
-射频 DAC: 16-bit, 5 GS/s, 128K 样点缓存，双通道同信号输出
-低速 DAC: 16-bit, 1 MS/s, 32K 样点缓存 (CH2 1G 样点), 四通道独立输出
+北京星烁华创 (FCCTEC) - **PCIe3640** AD/DA 二合一采集卡\
+射频 DAC: 16-bit, 5 GS/s, 128K 样点缓存，双通道同信号输出\
+低速 DAC: 16-bit, 1 MS/s, 32K 样点缓存 (CH2 1G 样点), 四通道独立输出\
 支持声卡：**是**
+
 现有问题：
 
 1. 目前 DAC 失灵了，无法输出任何信号！我们正在联系商家进行维修。
@@ -25,11 +27,13 @@
 #### NI PCIe6353
 
 National Instruments (NI) - **PCIe6353** 多功能 I/O 采集卡
-模拟输出：4 路 AO, 16-bit；单通道最高 2.86 MSa/s，多通道最高 1.25 MSa/s。AO <0..3> 由同一个 AO Sample Clock 同步更新，支持硬件定时 waveform generation；每路 AO reference 可独立设置为 10 V, 5 V, 或 APFI <0,1> 外部参考，因此输出范围为 -AO Reference 到 +AO Reference。
-时钟与触发：AO Start Trigger / Pause Trigger / Sample Clock 支持内部路由，也可通过 PFI <0..15> / RTSI <0..7> 等外部信号输入；AO Sample Clock Timebase 默认来自 100 MHz Timebase，也可选择 20 MHz、100 kHz 或外部 PFI 等信号。
-模拟输入：32 路单端 / 16 路差分 AI, 16-bit；单通道最高 1.25 MSa/s，多通道最高 1 MSamples/s。AI 输入范围可按通道设置，支持 -10 V 到 10 V、-5 V 到 5 V、-2 V 到 2 V、-1 V 到 1 V 等范围；支持 DIFF、RSE、NRSE 接法。
-适用性：PCIe6353 适合低速监测、同步控制、触发/时钟路由和振镜驱动测试；它的 AI 采样率远低于当前 OCT 原始干涉信号所需的 GS/s 级采样率，因此不能直接替代 PCIe3640 作为主 OCT ADC。
+
+模拟输出：4 路 AO, 16-bit；单通道最高 2.86 MSa/s，多通道最高 1.25 MSa/s。AO <0..3> 由同一个 AO Sample Clock 同步更新，支持硬件定时 waveform generation；每路 AO reference 可独立设置为 10 V, 5 V, 或 APFI <0,1> 外部参考，因此输出范围为 -AO Reference 到 +AO Reference。\
+时钟与触发：AO Start Trigger / Pause Trigger / Sample Clock 支持内部路由，也可通过 PFI <0..15> / RTSI <0..7> 等外部信号输入；AO Sample Clock Timebase 默认来自 100 MHz Timebase，也可选择 20 MHz、100 kHz 或外部 PFI 等信号。\
+模拟输入：32 路单端 / 16 路差分 AI, 16-bit；单通道最高 1.25 MSa/s，多通道最高 1 MSamples/s。AI 输入范围可按通道设置，支持 -10 V 到 10 V、-5 V 到 5 V、-2 V 到 2 V、-1 V 到 1 V 等范围；支持 DIFF、RSE、NRSE 接法。\
+适用性：PCIe6353 适合低速监测、同步控制、触发/时钟路由和振镜驱动测试；它的 AI 采样率远低于当前 OCT 原始干涉信号所需的 GS/s 级采样率，因此不能直接替代 PCIe3640 作为主 OCT ADC。\
 支持声卡：**是**
+
 现有问题：
 
 1. 仍未开始编写 NI-DAQmx 适配层。
@@ -39,15 +43,16 @@ National Instruments (NI) - **PCIe6353** 多功能 I/O 采集卡
 
 #### FCCTEC PCIe3640
 
-北京星烁华创 (FCCTEC) - **PCIe3640** AD/DA 二合一采集卡
+北京星烁华创 (FCCTEC) - **PCIe3640** AD/DA 二合一采集卡\
 性能：14-bit, 1.25 GS/s, 2G 样点 FIFO 缓存，双通道输入
+
 现有问题：
 
 1. 硬件不支持外部时钟，这使得 k-clock (波数线性时钟) 无法使用。这会极大地影响成像质量，而且暂时没有办法在硬件本身的层面进行修复。
 
 ## 使用说明
 
-上次更新: Ver. 260614
+上次更新: Ver. 260616
 
 ### 运行环境
 
@@ -86,6 +91,12 @@ powershell -ExecutionPolicy Bypass -File .\tools\deploy_release.ps1 -Configurati
 4. 可能会输出警告 `Warning: Could not find any translations in D:\QT\5.15.2-Build2\translations (developer build?)`. 这不会有实际影响，因为程序内置了 `qtbase_zh_CN.qm` 翻译。
 
 ## 更新信息
+
+### -- Ver. 260616a --
+
+1. `main`: 程序启动后、主界面显示前新增 DAC/ADC 设备选择对话框。DAC 可选择 `FCCTEC PCIe3640` 或 `NI PCIe6353`，ADC 当前保留 `FCCTEC PCIe3640`。
+2. `mainwidget`: 将设置拆分为 DAC、ADC 和共享参数分组；每个 DAC/ADC 设备会保存自己的硬件相关参数，同时保留 `[mainWidget]` 作为当前激活配置快照，兼容命令行转换和已保存数据 sidecar。
+3. `mainwidget`: `NI PCIe6353` 的 DAC 适配层尚未实现时，会阻止程序误走 `PCIe3640` DA 输出路径，并在主日志中提示。
 
 ### -- Ver. 260616 --
 

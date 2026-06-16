@@ -274,6 +274,10 @@ private:
     void stopPreparedOrRunningDAIfNeeded(bool forceStopDA = false);
     void loadSettings();
     void saveSettings() const;
+    bool selectedDacUsesPcie3640() const;
+    bool selectedAdcUsesPcie3640() const;
+    QString selectedDacDeviceName() const;
+    QString selectedAdcDeviceName() const;
     void applyFastAxisMode(const QString &arg1, bool appendMessage);
     void initializeLogFiles();
     void appendTextEditDeltaToLog(QTextEdit *textEdit,
@@ -291,6 +295,8 @@ private:
     int m_infoLogTextLength;
     int m_captureLogTextLength;
     bool m_logFilesInitialized;
+    QString m_selectedDacDeviceId;
+    QString m_selectedAdcDeviceId;
 };
 
 #endif // MAINWIDGET_H

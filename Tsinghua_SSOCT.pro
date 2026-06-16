@@ -43,6 +43,7 @@ SOURCES += \
         mythread.cpp \
         qcustomplot.cpp \
         MainWidgetUISetup.cpp \
+        DeviceSettings.cpp \
         VesselFindingDialogUISetup.cpp \
         VesselFlowShared.cpp \
         VesselSegmenter.cpp \
@@ -50,6 +51,7 @@ SOURCES += \
 
 HEADERS += \
         AppVersion.h \
+        DeviceSettings.h \
         FlowSpeedCalculation.h \
         FlowSpeedMaskDialog.h \
         VesselAudioPlayer.h \

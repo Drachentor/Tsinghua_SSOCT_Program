@@ -2,6 +2,6 @@
 #ifndef APPVERSION_H
 #define APPVERSION_H
 
-static const char currentVersion[] = "260616";
+static const char currentVersion[] = "260616a";
 
 #endif // APPVERSION_H

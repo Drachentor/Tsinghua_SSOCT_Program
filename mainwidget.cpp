@@ -6,6 +6,7 @@
 #include "VesselFindingDialog.h"
 #include "VesselProjectionProcessor.h"
 #include "AppVersion.h"
+#include "DeviceSettings.h"
 #include <QApplication>
 #include <QByteArray>
 #include <QCheckBox>
@@ -89,8 +90,7 @@ const int kSymphonicScanMode = 43;
 
 QString settingsFilePath()
 {
-    return QFileInfo(QString::fromLocal8Bit(__FILE__)).absolutePath()
-        + QStringLiteral("/settings.ini");
+    return DeviceSettings::settingsFilePath();
 }
 
 QString logFilePath(const QString &fileName)
@@ -669,6 +669,103 @@ QString settingsIniText()
     if (!settingsFile.open(QIODevice::ReadOnly | QIODevice::Text))
         return QString();
     return QString::fromUtf8(settingsFile.readAll());
+}
+
+QString settingsKeyPath(const QString &group, const QString &key)
+{
+    return group + QLatin1Char('/') + key;
+}
+
+QVariant groupedSettingValue(QSettings &settings,
+                             const QString &group,
+                             const QString &key,
+                             const QVariant &fallback)
+{
+    const QString legacyPath = settingsKeyPath(DeviceSettings::legacyMainWidgetGroup(), key);
+    const QVariant legacyValue = settings.value(legacyPath, fallback);
+    return settings.value(settingsKeyPath(group, key), legacyValue);
+}
+
+void setGroupedAndLegacyValue(QSettings &settings,
+                              const QString &group,
+                              const QString &key,
+                              const QVariant &value)
+{
+    settings.setValue(settingsKeyPath(group, key), value);
+    settings.setValue(settingsKeyPath(DeviceSettings::legacyMainWidgetGroup(), key), value);
+}
+
+QStringList dacSettingKeys()
+{
+    return {
+        QStringLiteral("amplitude"),
+        QStringLiteral("frameRate"),
+        QStringLiteral("AscanFreq"),
+        QStringLiteral("AscanDutyCycle"),
+        QStringLiteral("BscanCycleLen"),
+        QStringLiteral("dutycycle"),
+        QStringLiteral("enableDAInSymphonic"),
+        QStringLiteral("fastAxis")
+    };
+}
+
+QStringList adcSettingKeys()
+{
+    return {
+        QStringLiteral("AscanLen"),
+        QStringLiteral("SampleRate"),
+        QStringLiteral("triggerOffsetSamples"),
+        QStringLiteral("adFileOffsetFrames"),
+        QStringLiteral("continuousModeEnabled"),
+        QStringLiteral("continuousAlineCount"),
+        QStringLiteral("triggerMode"),
+        QStringLiteral("clockMode")
+    };
+}
+
+QStringList commonSettingKeys()
+{
+    return {
+        QStringLiteral("AngioRep"),
+        QStringLiteral("BscanLength"),
+        QStringLiteral("Bscanlines"),
+        QStringLiteral("show3DRealtimeData"),
+        QStringLiteral("realtimeShowInterval"),
+        QStringLiteral("fourierOnSaved"),
+        QStringLiteral("windowApplied"),
+        QStringLiteral("scanMode"),
+        QStringLiteral("convertMin"),
+        QStringLiteral("convertMax"),
+        QStringLiteral("projectionDepth"),
+        QStringLiteral("fftRangeStart"),
+        QStringLiteral("fftRangeEnd"),
+        QStringLiteral("displayMin"),
+        QStringLiteral("displayMax"),
+        QStringLiteral("filterX"),
+        QStringLiteral("filterY"),
+        QStringLiteral("dispersionW0"),
+        QStringLiteral("dispersionA1"),
+        QStringLiteral("dispersionA2")
+    };
+}
+
+void seedGroupFromLegacy(QSettings &settings, const QString &group, const QStringList &keys)
+{
+    for (const QString &key : keys) {
+        const QString groupedPath = settingsKeyPath(group, key);
+        const QString legacyPath = settingsKeyPath(DeviceSettings::legacyMainWidgetGroup(), key);
+        if (!settings.contains(groupedPath) && settings.contains(legacyPath))
+            settings.setValue(groupedPath, settings.value(legacyPath));
+    }
+}
+
+void seedCategorizedSettingsFromLegacy(QSettings &settings)
+{
+    for (const DeviceSettings::DeviceOption &device : DeviceSettings::supportedDacDevices())
+        seedGroupFromLegacy(settings, DeviceSettings::dacSettingsGroup(device.id), dacSettingKeys());
+    for (const DeviceSettings::DeviceOption &device : DeviceSettings::supportedAdcDevices())
+        seedGroupFromLegacy(settings, DeviceSettings::adcSettingsGroup(device.id), adcSettingKeys());
+    seedGroupFromLegacy(settings, DeviceSettings::commonSettingsGroup(), commonSettingKeys());
 }
 
 bool writeJsonDocument(const QString &filePath, const QJsonObject &root, QString *errorMessage)
@@ -1933,7 +2030,9 @@ mainWidget::mainWidget(QWidget *parent):
     m_activeVolumeSegmentIndex(0),
     m_infoLogTextLength(0),
     m_captureLogTextLength(0),
-    m_logFilesInitialized(false)
+    m_logFilesInitialized(false),
+    m_selectedDacDeviceId(DeviceSettings::defaultDacDeviceId()),
+    m_selectedAdcDeviceId(DeviceSettings::defaultAdcDeviceId())
 {
     // UI 设置
     ui->setupUi(this);
@@ -1964,6 +2063,8 @@ mainWidget::mainWidget(QWidget *parent):
     ui->textEdit->append("Tsinghua_SSOCT");
     ui->textEdit->append("清华大学 SSOCT 系统成像程序");
     ui->textEdit->append(QStringLiteral("Ver. ") + QString::fromLatin1(currentVersion));
+    ui->textEdit->append(QStringLiteral("DAC 设备：%1").arg(selectedDacDeviceName()));
+    ui->textEdit->append(QStringLiteral("ADC 设备：%1").arg(selectedAdcDeviceName()));
     ui->textEdit->append("沈逸然 石叶炅\n");
     QString audioStatusMessage;
     QString audioErrorMessage;
@@ -1974,7 +2075,10 @@ mainWidget::mainWidget(QWidget *parent):
     changeScanMode(ui->comboBox->currentText());
     applyFastAxisMode(ui->comboBox_2->currentText(), true);
 
-    PrintBoardInfo();
+    if (selectedAdcUsesPcie3640())
+        PrintBoardInfo();
+    else
+        ui->textEdit->append(QStringLiteral("当前 ADC 设备尚未实现板卡信息读取。"));
 
     // 初始化相关的系数, 直接在 ui 里面设置
     m_BscanLen = ui->BscanLength->text().toUInt();
@@ -1991,7 +2095,12 @@ mainWidget::mainWidget(QWidget *parent):
     connect(ssoctThread, &mythread::acquisitionStatus, ui->textEdit_temp, &QTextEdit::append);
     connect(ssoctThread, &mythread::captureLoopFinished,
             this, &mainWidget::onAcquisitionLoopFinished);
-    if (ssoctThread->InitializePositionOutputsToZero())
+    if (!selectedDacUsesPcie3640())
+    {
+        ui->textEdit->append(QStringLiteral("%1 DAC 适配层尚未实现，已跳过 PCIe3640 位置通道初始化。")
+                             .arg(selectedDacDeviceName()));
+    }
+    else if (ssoctThread->InitializePositionOutputsToZero())
     {
         ui->textEdit->append(QStringLiteral("PCIe3640 位置通道已初始化为 0V（DACH1-DACH4）。"));
     }
@@ -2410,106 +2519,126 @@ void mainWidget::resetSpectralWindow()
 void mainWidget::loadSettings()
 {
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
-    settings.beginGroup(QStringLiteral("mainWidget"));
+    seedCategorizedSettingsFromLegacy(settings);
+    m_selectedDacDeviceId = DeviceSettings::selectedDacDeviceId(settings);
+    m_selectedAdcDeviceId = DeviceSettings::selectedAdcDeviceId(settings);
 
-    ui->amplitude->setText(settings.value(QStringLiteral("amplitude"), ui->amplitude->text()).toString());
-    ui->frameRate->setText(settings.value(QStringLiteral("frameRate"), ui->frameRate->text()).toString());
-    ui->AscanFreq->setText(settings.value(QStringLiteral("AscanFreq"), ui->AscanFreq->text()).toString());
-    ui->LE_AscanLen->setText(settings.value(QStringLiteral("AscanLen"), ui->LE_AscanLen->text()).toString());
-    ui->SampleRate->setText(settings.value(QStringLiteral("SampleRate"), ui->SampleRate->text()).toString());
-    ui->LE_AscanDutyCycle->setText(settings.value(QStringLiteral("AscanDutyCycle"), ui->LE_AscanDutyCycle->text()).toString());
-    ui->SB_triggerOffsetSamples->setValue(settings.value(QStringLiteral("triggerOffsetSamples"), ui->SB_triggerOffsetSamples->value()).toInt());
-    ui->LE_BscanCycleLen->setText(settings.value(QStringLiteral("BscanCycleLen"), ui->LE_BscanCycleLen->text()).toString());
-    ui->LE_AngioRep->setText(settings.value(QStringLiteral("AngioRep"), ui->LE_AngioRep->text()).toString());
-    ui->LE_adFileOffsetFrames->setText(settings.value(QStringLiteral("adFileOffsetFrames"), ui->LE_adFileOffsetFrames->text()).toString());
-    ui->BscanLength->setText(settings.value(QStringLiteral("BscanLength"), ui->BscanLength->text()).toString());
-    ui->Bscanlines->setText(settings.value(QStringLiteral("Bscanlines"), ui->Bscanlines->text()).toString());
-    ui->dutycycle->setText(settings.value(QStringLiteral("dutycycle"), ui->dutycycle->text()).toString());
-    ui->CB_enableContinuousMode->setChecked(settings.value(QStringLiteral("continuousModeEnabled"), ui->CB_enableContinuousMode->isChecked()).toBool());
-    ui->Line_continuousCount->setText(settings.value(QStringLiteral("continuousAlineCount"), ui->Line_continuousCount->text()).toString());
-    ui->CB_3D_showReatimeData->setChecked(settings.value(QStringLiteral("show3DRealtimeData"), ui->CB_3D_showReatimeData->isChecked()).toBool());
-    ui->Line_realtimeShowInterval->setText(settings.value(QStringLiteral("realtimeShowInterval"), ui->Line_realtimeShowInterval->text()).toString());
-    ui->CB_fourierOnSaved->setChecked(settings.value(QStringLiteral("fourierOnSaved"), ui->CB_fourierOnSaved->isChecked()).toBool());
-    ui->CB_enableDAInSymphonic->setChecked(settings.value(QStringLiteral("enableDAInSymphonic"), ui->CB_enableDAInSymphonic->isChecked()).toBool());
+    const QString dacGroup = DeviceSettings::dacSettingsGroup(m_selectedDacDeviceId);
+    const QString adcGroup = DeviceSettings::adcSettingsGroup(m_selectedAdcDeviceId);
+    const QString commonGroup = DeviceSettings::commonSettingsGroup();
+    auto dacValue = [&settings, &dacGroup](const QString &key, const QVariant &fallback) {
+        return groupedSettingValue(settings, dacGroup, key, fallback);
+    };
+    auto adcValue = [&settings, &adcGroup](const QString &key, const QVariant &fallback) {
+        return groupedSettingValue(settings, adcGroup, key, fallback);
+    };
+    auto commonValue = [&settings, &commonGroup](const QString &key, const QVariant &fallback) {
+        return groupedSettingValue(settings, commonGroup, key, fallback);
+    };
 
-    setComboBoxText(ui->comboBox_2, settings.value(QStringLiteral("fastAxis"), ui->comboBox_2->currentText()).toString());
-    setComboBoxText(ui->comboBox, settings.value(QStringLiteral("scanMode"), ui->comboBox->currentText()).toString());
-    setComboBoxText(ui->combo_triggerMode, settings.value(QStringLiteral("triggerMode"), ui->combo_triggerMode->currentText()).toString());
-    setComboBoxText(ui->combo_clockMode, settings.value(QStringLiteral("clockMode"), ui->combo_clockMode->currentText()).toString());
+    ui->amplitude->setText(dacValue(QStringLiteral("amplitude"), ui->amplitude->text()).toString());
+    ui->frameRate->setText(dacValue(QStringLiteral("frameRate"), ui->frameRate->text()).toString());
+    ui->AscanFreq->setText(dacValue(QStringLiteral("AscanFreq"), ui->AscanFreq->text()).toString());
+    ui->LE_AscanDutyCycle->setText(dacValue(QStringLiteral("AscanDutyCycle"), ui->LE_AscanDutyCycle->text()).toString());
+    ui->LE_BscanCycleLen->setText(dacValue(QStringLiteral("BscanCycleLen"), ui->LE_BscanCycleLen->text()).toString());
+    ui->dutycycle->setText(dacValue(QStringLiteral("dutycycle"), ui->dutycycle->text()).toString());
+    ui->CB_enableDAInSymphonic->setChecked(dacValue(QStringLiteral("enableDAInSymphonic"), ui->CB_enableDAInSymphonic->isChecked()).toBool());
+    setComboBoxText(ui->comboBox_2, dacValue(QStringLiteral("fastAxis"), ui->comboBox_2->currentText()).toString());
+
+    ui->LE_AscanLen->setText(adcValue(QStringLiteral("AscanLen"), ui->LE_AscanLen->text()).toString());
+    ui->SampleRate->setText(adcValue(QStringLiteral("SampleRate"), ui->SampleRate->text()).toString());
+    ui->SB_triggerOffsetSamples->setValue(adcValue(QStringLiteral("triggerOffsetSamples"), ui->SB_triggerOffsetSamples->value()).toInt());
+    ui->LE_adFileOffsetFrames->setText(adcValue(QStringLiteral("adFileOffsetFrames"), ui->LE_adFileOffsetFrames->text()).toString());
+    ui->CB_enableContinuousMode->setChecked(adcValue(QStringLiteral("continuousModeEnabled"), ui->CB_enableContinuousMode->isChecked()).toBool());
+    ui->Line_continuousCount->setText(adcValue(QStringLiteral("continuousAlineCount"), ui->Line_continuousCount->text()).toString());
+    setComboBoxText(ui->combo_triggerMode, adcValue(QStringLiteral("triggerMode"), ui->combo_triggerMode->currentText()).toString());
+    setComboBoxText(ui->combo_clockMode, adcValue(QStringLiteral("clockMode"), ui->combo_clockMode->currentText()).toString());
     triggerMode = triggerModeFromText(ui->combo_triggerMode->currentText());
     clockMode = clockModeFromText(ui->combo_clockMode->currentText());
     ContinuousModeEnabled = ui->CB_enableContinuousMode->isChecked();
     ContinuousAlineCount = ui->Line_continuousCount->text().toInt();
 
-    ui->SB_convert_min->setValue(settings.value(QStringLiteral("convertMin"), ui->SB_convert_min->value()).toInt());
-    ui->SB_convert_max->setValue(settings.value(QStringLiteral("convertMax"), ui->SB_convert_max->value()).toInt());
-    ui->SB_projectionDepth->setValue(settings.value(QStringLiteral("projectionDepth"), ui->SB_projectionDepth->value()).toInt());
+    ui->LE_AngioRep->setText(commonValue(QStringLiteral("AngioRep"), ui->LE_AngioRep->text()).toString());
+    ui->BscanLength->setText(commonValue(QStringLiteral("BscanLength"), ui->BscanLength->text()).toString());
+    ui->Bscanlines->setText(commonValue(QStringLiteral("Bscanlines"), ui->Bscanlines->text()).toString());
+    ui->CB_3D_showReatimeData->setChecked(commonValue(QStringLiteral("show3DRealtimeData"), ui->CB_3D_showReatimeData->isChecked()).toBool());
+    ui->Line_realtimeShowInterval->setText(commonValue(QStringLiteral("realtimeShowInterval"), ui->Line_realtimeShowInterval->text()).toString());
+    ui->CB_fourierOnSaved->setChecked(commonValue(QStringLiteral("fourierOnSaved"), ui->CB_fourierOnSaved->isChecked()).toBool());
+    setComboBoxText(ui->comboBox, commonValue(QStringLiteral("scanMode"), ui->comboBox->currentText()).toString());
+
+    ui->SB_convert_min->setValue(commonValue(QStringLiteral("convertMin"), ui->SB_convert_min->value()).toInt());
+    ui->SB_convert_max->setValue(commonValue(QStringLiteral("convertMax"), ui->SB_convert_max->value()).toInt());
+    ui->SB_projectionDepth->setValue(commonValue(QStringLiteral("projectionDepth"), ui->SB_projectionDepth->value()).toInt());
 
     updateBscanCycleLengthFromFrequencies();
     readSysParametersFromUi();
-    const bool windowApplied = settings.value(QStringLiteral("windowApplied"), !mainWidget::Wflag).toBool();
+    const bool windowApplied = commonValue(QStringLiteral("windowApplied"), !mainWidget::Wflag).toBool();
     mainWidget::Wflag = !windowApplied;
     ui->addWindow->setStyleSheet(windowApplied
         ? "QPushButton{border-image:url(:/new/prefix1/removeWindow.png);}"
         : "QPushButton{border-image:url(:/new/prefix1/addWindow.png);}");
     resetSpectralWindow();
 
-    ui->spinBox->setValue(settings.value(QStringLiteral("fftRangeStart"), ui->spinBox->value()).toInt());
-    ui->spinBox_2->setValue(settings.value(QStringLiteral("fftRangeEnd"), ui->spinBox_2->value()).toInt());
-    ui->spinBox_3->setValue(settings.value(QStringLiteral("displayMin"), ui->spinBox_3->value()).toInt());
-    ui->spinBox_4->setValue(settings.value(QStringLiteral("displayMax"), ui->spinBox_4->value()).toInt());
-    ui->spinBox_5->setValue(settings.value(QStringLiteral("filterX"), ui->spinBox_5->value()).toInt());
-    ui->spinBox_6->setValue(settings.value(QStringLiteral("filterY"), ui->spinBox_6->value()).toInt());
+    ui->spinBox->setValue(commonValue(QStringLiteral("fftRangeStart"), ui->spinBox->value()).toInt());
+    ui->spinBox_2->setValue(commonValue(QStringLiteral("fftRangeEnd"), ui->spinBox_2->value()).toInt());
+    ui->spinBox_3->setValue(commonValue(QStringLiteral("displayMin"), ui->spinBox_3->value()).toInt());
+    ui->spinBox_4->setValue(commonValue(QStringLiteral("displayMax"), ui->spinBox_4->value()).toInt());
+    ui->spinBox_5->setValue(commonValue(QStringLiteral("filterX"), ui->spinBox_5->value()).toInt());
+    ui->spinBox_6->setValue(commonValue(QStringLiteral("filterY"), ui->spinBox_6->value()).toInt());
 
-    ui->doubleSpinBoxw0->setValue(settings.value(QStringLiteral("dispersionW0"), ui->doubleSpinBoxw0->value()).toDouble());
-    ui->doubleSpinBoxa1->setValue(settings.value(QStringLiteral("dispersionA1"), ui->doubleSpinBoxa1->value()).toDouble());
-    ui->doubleSpinBoxa2->setValue(settings.value(QStringLiteral("dispersionA2"), ui->doubleSpinBoxa2->value()).toDouble());
-    settings.endGroup();
+    ui->doubleSpinBoxw0->setValue(commonValue(QStringLiteral("dispersionW0"), ui->doubleSpinBoxw0->value()).toDouble());
+    ui->doubleSpinBoxa1->setValue(commonValue(QStringLiteral("dispersionA1"), ui->doubleSpinBoxa1->value()).toDouble());
+    ui->doubleSpinBoxa2->setValue(commonValue(QStringLiteral("dispersionA2"), ui->doubleSpinBoxa2->value()).toDouble());
 }
 
 void mainWidget::saveSettings() const
 {
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
-    settings.beginGroup(QStringLiteral("mainWidget"));
+    DeviceSettings::saveSelectedDevices(settings, m_selectedDacDeviceId, m_selectedAdcDeviceId);
 
-    settings.setValue(QStringLiteral("amplitude"), ui->amplitude->text());
-    settings.setValue(QStringLiteral("frameRate"), ui->frameRate->text());
-    settings.setValue(QStringLiteral("AscanFreq"), ui->AscanFreq->text());
-    settings.setValue(QStringLiteral("AscanLen"), ui->LE_AscanLen->text());
-    settings.setValue(QStringLiteral("SampleRate"), ui->SampleRate->text());
-    settings.setValue(QStringLiteral("AscanDutyCycle"), ui->LE_AscanDutyCycle->text());
-    settings.setValue(QStringLiteral("triggerOffsetSamples"), ui->SB_triggerOffsetSamples->value());
-    settings.setValue(QStringLiteral("BscanCycleLen"), ui->LE_BscanCycleLen->text());
-    settings.setValue(QStringLiteral("AngioRep"), QString::number(m_AngioRep));
-    settings.setValue(QStringLiteral("adFileOffsetFrames"), ui->LE_adFileOffsetFrames->text());
-    settings.setValue(QStringLiteral("BscanLength"), ui->BscanLength->text());
-    settings.setValue(QStringLiteral("Bscanlines"), ui->Bscanlines->text());
-    settings.setValue(QStringLiteral("dutycycle"), ui->dutycycle->text());
-    settings.setValue(QStringLiteral("continuousModeEnabled"), ui->CB_enableContinuousMode->isChecked());
-    settings.setValue(QStringLiteral("continuousAlineCount"), ui->Line_continuousCount->text());
-    settings.setValue(QStringLiteral("show3DRealtimeData"), ui->CB_3D_showReatimeData->isChecked());
-    settings.setValue(QStringLiteral("realtimeShowInterval"), ui->Line_realtimeShowInterval->text());
-    settings.setValue(QStringLiteral("fourierOnSaved"), ui->CB_fourierOnSaved->isChecked());
-    settings.setValue(QStringLiteral("enableDAInSymphonic"), ui->CB_enableDAInSymphonic->isChecked());
-    settings.setValue(QStringLiteral("windowApplied"), !mainWidget::Wflag);
-    settings.setValue(QStringLiteral("fastAxis"), ui->comboBox_2->currentText());
-    settings.setValue(QStringLiteral("scanMode"), ui->comboBox->currentText());
-    settings.setValue(QStringLiteral("triggerMode"), ui->combo_triggerMode->currentText());
-    settings.setValue(QStringLiteral("clockMode"), ui->combo_clockMode->currentText());
+    const QString dacGroup = DeviceSettings::dacSettingsGroup(m_selectedDacDeviceId);
+    const QString adcGroup = DeviceSettings::adcSettingsGroup(m_selectedAdcDeviceId);
+    const QString commonGroup = DeviceSettings::commonSettingsGroup();
 
-    settings.setValue(QStringLiteral("convertMin"), ui->SB_convert_min->value());
-    settings.setValue(QStringLiteral("convertMax"), ui->SB_convert_max->value());
-    settings.setValue(QStringLiteral("projectionDepth"), ui->SB_projectionDepth->value());
-    settings.setValue(QStringLiteral("fftRangeStart"), ui->spinBox->value());
-    settings.setValue(QStringLiteral("fftRangeEnd"), ui->spinBox_2->value());
-    settings.setValue(QStringLiteral("displayMin"), ui->spinBox_3->value());
-    settings.setValue(QStringLiteral("displayMax"), ui->spinBox_4->value());
-    settings.setValue(QStringLiteral("filterX"), ui->spinBox_5->value());
-    settings.setValue(QStringLiteral("filterY"), ui->spinBox_6->value());
-    settings.setValue(QStringLiteral("dispersionW0"), ui->doubleSpinBoxw0->value());
-    settings.setValue(QStringLiteral("dispersionA1"), ui->doubleSpinBoxa1->value());
-    settings.setValue(QStringLiteral("dispersionA2"), ui->doubleSpinBoxa2->value());
-    settings.endGroup();
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("amplitude"), ui->amplitude->text());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("frameRate"), ui->frameRate->text());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("AscanFreq"), ui->AscanFreq->text());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("AscanDutyCycle"), ui->LE_AscanDutyCycle->text());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("BscanCycleLen"), ui->LE_BscanCycleLen->text());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("dutycycle"), ui->dutycycle->text());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("enableDAInSymphonic"), ui->CB_enableDAInSymphonic->isChecked());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("fastAxis"), ui->comboBox_2->currentText());
+
+    setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("AscanLen"), ui->LE_AscanLen->text());
+    setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("SampleRate"), ui->SampleRate->text());
+    setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("triggerOffsetSamples"), ui->SB_triggerOffsetSamples->value());
+    setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("adFileOffsetFrames"), ui->LE_adFileOffsetFrames->text());
+    setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("continuousModeEnabled"), ui->CB_enableContinuousMode->isChecked());
+    setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("continuousAlineCount"), ui->Line_continuousCount->text());
+    setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("triggerMode"), ui->combo_triggerMode->currentText());
+    setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("clockMode"), ui->combo_clockMode->currentText());
+
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("AngioRep"), QString::number(m_AngioRep));
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("BscanLength"), ui->BscanLength->text());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("Bscanlines"), ui->Bscanlines->text());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("show3DRealtimeData"), ui->CB_3D_showReatimeData->isChecked());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("realtimeShowInterval"), ui->Line_realtimeShowInterval->text());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("fourierOnSaved"), ui->CB_fourierOnSaved->isChecked());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("windowApplied"), !mainWidget::Wflag);
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("scanMode"), ui->comboBox->currentText());
+
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("convertMin"), ui->SB_convert_min->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("convertMax"), ui->SB_convert_max->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("projectionDepth"), ui->SB_projectionDepth->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("fftRangeStart"), ui->spinBox->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("fftRangeEnd"), ui->spinBox_2->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("displayMin"), ui->spinBox_3->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("displayMax"), ui->spinBox_4->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("filterX"), ui->spinBox_5->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("filterY"), ui->spinBox_6->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("dispersionW0"), ui->doubleSpinBoxw0->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("dispersionA1"), ui->doubleSpinBoxa1->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("dispersionA2"), ui->doubleSpinBoxa2->value());
     settings.sync();
 }
 
@@ -2545,6 +2674,26 @@ void mainWidget::updateControlState()
     }
 }
 
+bool mainWidget::selectedDacUsesPcie3640() const
+{
+    return DeviceSettings::isFcctecPcie3640Dac(m_selectedDacDeviceId);
+}
+
+bool mainWidget::selectedAdcUsesPcie3640() const
+{
+    return DeviceSettings::isFcctecPcie3640Adc(m_selectedAdcDeviceId);
+}
+
+QString mainWidget::selectedDacDeviceName() const
+{
+    return DeviceSettings::dacDeviceDisplayName(m_selectedDacDeviceId);
+}
+
+QString mainWidget::selectedAdcDeviceName() const
+{
+    return DeviceSettings::adcDeviceDisplayName(m_selectedAdcDeviceId);
+}
+
 bool mainWidget::symphonicDaOutputEnabled() const
 {
     return mainWidget::scanMode == kSymphonicScanMode
@@ -2554,6 +2703,8 @@ bool mainWidget::symphonicDaOutputEnabled() const
 void mainWidget::stopPreparedOrRunningDAIfNeeded(bool forceStopDA)
 {
     if (ssoctThread == nullptr)
+        return;
+    if (!selectedDacUsesPcie3640())
         return;
     if (forceStopDA || mainWidget::scanMode != kSymphonicScanMode || m_daState == DAState::Ready || m_daState == DAState::Scanning)
         ssoctThread->StopDAScan();
@@ -2916,6 +3067,14 @@ bool mainWidget::prepareDAFromUi()
         return false;
     }
     saveSettings();
+
+    if (!selectedDacUsesPcie3640())
+    {
+        m_daState = DAState::NotReady;
+        ui->textEdit->append(QStringLiteral("%1 DAC 适配层尚未实现，当前不会调用 PCIe3640 DA 输出。")
+                             .arg(selectedDacDeviceName()));
+        return false;
+    }
 
     if (mainWidget::scanMode == kSymphonicScanMode)
     {
@@ -3464,6 +3623,16 @@ void mainWidget::on_startButton_clicked()
         firstThread->start();
 
     const bool reinitializingPreparedAD = m_adReady;
+    if (!selectedAdcUsesPcie3640())
+    {
+        ui->textEdit->append(QStringLiteral("%1 ADC 适配层尚未实现，无法开始采集。")
+                             .arg(selectedAdcDeviceName()));
+        firstThread->quit();
+        firstThread->wait();
+        m_adReady = false;
+        updateControlState();
+        return;
+    }
     if (!ssoctThread->InitADForCapture())
     {
         ui->textEdit->append("采集卡初始化失败，无法开始扫描！");
@@ -3516,6 +3685,16 @@ void mainWidget::on_connectButton_clicked()
     }
 
     firstThread->start();
+    if (!selectedAdcUsesPcie3640())
+    {
+        ui->textEdit->append(QStringLiteral("%1 ADC 适配层尚未实现，无法连接采集卡。")
+                             .arg(selectedAdcDeviceName()));
+        firstThread->quit();
+        firstThread->wait();
+        m_adReady = false;
+        updateControlState();
+        return;
+    }
     if (!ssoctThread->InitADForCapture())
     {
         ui->textEdit->append("连接采集卡失败！");

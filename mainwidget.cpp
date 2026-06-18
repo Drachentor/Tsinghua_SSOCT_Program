@@ -705,7 +705,12 @@ QStringList dacSettingKeys()
         QStringLiteral("BscanCycleLen"),
         QStringLiteral("dutycycle"),
         QStringLiteral("enableDAInSymphonic"),
-        QStringLiteral("fastAxis")
+        QStringLiteral("fastAxis"),
+        QStringLiteral("niDeviceName"),
+        QStringLiteral("niAoChannels"),
+        QStringLiteral("niAoRangeVolts"),
+        QStringLiteral("niSampleClockSource"),
+        QStringLiteral("niStartTriggerSource")
     };
 }
 
@@ -878,6 +883,33 @@ void setComboBoxText(QComboBox *comboBox, const QString &text)
     if (index >= 0) {
         comboBox->setCurrentIndex(index);
     }
+}
+
+QString normalizedNiSourceDisplayText(const QString &text)
+{
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty() || trimmed.compare(QStringLiteral("Internal"), Qt::CaseInsensitive) == 0)
+        return QStringLiteral("Internal");
+
+    const QString upper = trimmed.toUpper();
+    for (int i = 0; i <= 15; ++i) {
+        const QString pfi = QStringLiteral("PFI%1").arg(i);
+        if (upper == pfi || upper.endsWith(QStringLiteral("/") + pfi))
+            return pfi;
+    }
+    return QStringLiteral("Internal");
+}
+
+QString niDaqmxTerminalFromSourceText(const QString &text, const QString &deviceName)
+{
+    const QString source = normalizedNiSourceDisplayText(text);
+    if (source == QStringLiteral("Internal"))
+        return QString();
+
+    const QString device = deviceName.trimmed().isEmpty()
+        ? QStringLiteral("Dev1")
+        : deviceName.trimmed();
+    return QStringLiteral("/%1/%2").arg(device, source);
 }
 
 mainWidget::ADTriggerMode triggerModeFromText(const QString &text)
@@ -2079,6 +2111,8 @@ mainWidget::mainWidget(QWidget *parent):
         PrintBoardInfo();
     else
         ui->textEdit->append(QStringLiteral("当前 ADC 设备尚未实现板卡信息读取。"));
+    if (selectedDacUsesNiPcie6353())
+        PrintNiPcie6353BoardInfo();
 
     // 初始化相关的系数, 直接在 ui 里面设置
     m_BscanLen = ui->BscanLength->text().toUInt();
@@ -2092,12 +2126,13 @@ mainWidget::mainWidget(QWidget *parent):
     firstThread = new QThread;
     ssoctThread = new mythread;
     ssoctThread->moveToThread(firstThread);
+    applySelectedDacBackendToThread();
     connect(ssoctThread, &mythread::acquisitionStatus, ui->textEdit_temp, &QTextEdit::append);
     connect(ssoctThread, &mythread::captureLoopFinished,
             this, &mainWidget::onAcquisitionLoopFinished);
     if (!selectedDacUsesPcie3640())
     {
-        ui->textEdit->append(QStringLiteral("%1 DAC 适配层尚未实现，已跳过 PCIe3640 位置通道初始化。")
+        ui->textEdit->append(QStringLiteral("%1 将用于 X/Y 振镜 AO；已跳过 PCIe3640 位置通道启动初始化，PCIe3640 仍用于 RF 时基和 ADC。")
                              .arg(selectedDacDeviceName()));
     }
     else if (ssoctThread->InitializePositionOutputsToZero())
@@ -2186,6 +2221,18 @@ mainWidget::mainWidget(QWidget *parent):
         updateFrameRateFromBscanCycleLength();
         saveSettings();
     });
+    auto niSettingsChanged = [this]() {
+        applySelectedDacBackendToThread();
+        if (m_daState == DAState::Ready)
+        {
+            stopCurrentScan(false, true, QStringLiteral("NI DA 参数已改变，请重新准备 DA。"), true);
+        }
+        saveSettings();
+        updateControlState();
+    };
+    connect(ui->LE_NIDeviceName, &QLineEdit::editingFinished, this, niSettingsChanged);
+    connect(ui->combo_NISampleClockSource, QOverload<int>::of(&QComboBox::currentIndexChanged), this, niSettingsChanged);
+    connect(ui->combo_NIStartTriggerSource, QOverload<int>::of(&QComboBox::currentIndexChanged), this, niSettingsChanged);
     // 把采集的线程从 mainWidget 这一图形界面的线程中分离出来，放到一个单独的线程中去执行，从而保持界面响应
     updateControlState();
 }
@@ -2544,6 +2591,13 @@ void mainWidget::loadSettings()
     ui->dutycycle->setText(dacValue(QStringLiteral("dutycycle"), ui->dutycycle->text()).toString());
     ui->CB_enableDAInSymphonic->setChecked(dacValue(QStringLiteral("enableDAInSymphonic"), ui->CB_enableDAInSymphonic->isChecked()).toBool());
     setComboBoxText(ui->comboBox_2, dacValue(QStringLiteral("fastAxis"), ui->comboBox_2->currentText()).toString());
+    ui->LE_NIDeviceName->setText(dacValue(QStringLiteral("niDeviceName"), ui->LE_NIDeviceName->text()).toString());
+    setComboBoxText(ui->combo_NISampleClockSource,
+                    normalizedNiSourceDisplayText(dacValue(QStringLiteral("niSampleClockSource"),
+                                                           QStringLiteral("Internal")).toString()));
+    setComboBoxText(ui->combo_NIStartTriggerSource,
+                    normalizedNiSourceDisplayText(dacValue(QStringLiteral("niStartTriggerSource"),
+                                                           QStringLiteral("Internal")).toString()));
 
     ui->LE_AscanLen->setText(adcValue(QStringLiteral("AscanLen"), ui->LE_AscanLen->text()).toString());
     ui->SampleRate->setText(adcValue(QStringLiteral("SampleRate"), ui->SampleRate->text()).toString());
@@ -2608,6 +2662,11 @@ void mainWidget::saveSettings() const
     setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("dutycycle"), ui->dutycycle->text());
     setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("enableDAInSymphonic"), ui->CB_enableDAInSymphonic->isChecked());
     setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("fastAxis"), ui->comboBox_2->currentText());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("niDeviceName"), ui->LE_NIDeviceName->text());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("niAoChannels"), QStringLiteral("ao0:1"));
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("niAoRangeVolts"), QStringLiteral("5"));
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("niSampleClockSource"), ui->combo_NISampleClockSource->currentText());
+    setGroupedAndLegacyValue(settings, dacGroup, QStringLiteral("niStartTriggerSource"), ui->combo_NIStartTriggerSource->currentText());
 
     setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("AscanLen"), ui->LE_AscanLen->text());
     setGroupedAndLegacyValue(settings, adcGroup, QStringLiteral("SampleRate"), ui->SampleRate->text());
@@ -2679,6 +2738,11 @@ bool mainWidget::selectedDacUsesPcie3640() const
     return DeviceSettings::isFcctecPcie3640Dac(m_selectedDacDeviceId);
 }
 
+bool mainWidget::selectedDacUsesNiPcie6353() const
+{
+    return DeviceSettings::isNiPcie6353Dac(m_selectedDacDeviceId);
+}
+
 bool mainWidget::selectedAdcUsesPcie3640() const
 {
     return DeviceSettings::isFcctecPcie3640Adc(m_selectedAdcDeviceId);
@@ -2694,6 +2758,32 @@ QString mainWidget::selectedAdcDeviceName() const
     return DeviceSettings::adcDeviceDisplayName(m_selectedAdcDeviceId);
 }
 
+NiPcie6353DacConfig mainWidget::niDacConfigFromUi() const
+{
+    NiPcie6353DacConfig config;
+    config.deviceName = ui->LE_NIDeviceName->text().trimmed();
+    config.aoChannels = QStringLiteral("ao0:1");
+    config.outputRangeVolts = 5.0;
+    config.sampleClockSource = niDaqmxTerminalFromSourceText(ui->combo_NISampleClockSource->currentText(),
+                                                            config.deviceName);
+    config.startTriggerSource = niDaqmxTerminalFromSourceText(ui->combo_NIStartTriggerSource->currentText(),
+                                                             config.deviceName);
+    config.fifoRegenerationMode = isVolumeScanMode()
+        ? NiPcie6353FifoRegenerationMode::Standard
+        : NiPcie6353FifoRegenerationMode::AutoIfFits;
+    return config;
+}
+
+void mainWidget::applySelectedDacBackendToThread()
+{
+    if (ssoctThread == nullptr)
+        return;
+    if (selectedDacUsesNiPcie6353())
+        ssoctThread->UseNiPcie6353DacBackend(niDacConfigFromUi());
+    else
+        ssoctThread->UsePcie3640DacBackend();
+}
+
 bool mainWidget::symphonicDaOutputEnabled() const
 {
     return mainWidget::scanMode == kSymphonicScanMode
@@ -2703,8 +2793,6 @@ bool mainWidget::symphonicDaOutputEnabled() const
 void mainWidget::stopPreparedOrRunningDAIfNeeded(bool forceStopDA)
 {
     if (ssoctThread == nullptr)
-        return;
-    if (!selectedDacUsesPcie3640())
         return;
     if (forceStopDA || mainWidget::scanMode != kSymphonicScanMode || m_daState == DAState::Ready || m_daState == DAState::Scanning)
         ssoctThread->StopDAScan();
@@ -2803,6 +2891,12 @@ bool mainWidget::configureVolumeSegmentationFromCurrentParams()
     if (!isVolumeScanMode())
     {
         ssoctThread->SetVolumeSegmentAcquisitionPlan(0, 0);
+        return true;
+    }
+    if (selectedDacUsesNiPcie6353())
+    {
+        ssoctThread->SetVolumeSegmentAcquisitionPlan(0, 0);
+        ui->textEdit->append(QStringLiteral("NI PCIe6353 AO：跳过 PCIe3640 每路 1M 点上限分段检查，将准备完整 Cscan AO 缓冲并启用 DAQmx regeneration。"));
         return true;
     }
 
@@ -3067,14 +3161,7 @@ bool mainWidget::prepareDAFromUi()
         return false;
     }
     saveSettings();
-
-    if (!selectedDacUsesPcie3640())
-    {
-        m_daState = DAState::NotReady;
-        ui->textEdit->append(QStringLiteral("%1 DAC 适配层尚未实现，当前不会调用 PCIe3640 DA 输出。")
-                             .arg(selectedDacDeviceName()));
-        return false;
-    }
+    applySelectedDacBackendToThread();
 
     if (mainWidget::scanMode == kSymphonicScanMode)
     {
@@ -3485,6 +3572,20 @@ void mainWidget::PrintBoardInfo()
     ui->textEdit->append("AD 板载 FIFO：" + QString::number(cardInfo.AD_FIFO & 0xffff) + " G采样点");
     ui->textEdit->append("板卡温度：" + QString::number(PCIe3640_GetTemp(pcieHandle), 'f', 1) + " 摄氏度");
     PCIe3640_UnLink(pcieHandle);
+}
+
+void mainWidget::PrintNiPcie6353BoardInfo()
+{
+    QStringList infoLines;
+    QString errorMessage;
+    if (!NiPcie6353Dac::probeDevice(niDacConfigFromUi(), &infoLines, &errorMessage))
+    {
+        ui->textEdit->append(QStringLiteral("NI PCIe6353 检查失败：%1").arg(errorMessage));
+        return;
+    }
+
+    for (const QString &line : infoLines)
+        ui->textEdit->append(line);
 }
 
 mainWidget::~mainWidget()

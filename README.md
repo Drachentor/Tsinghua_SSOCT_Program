@@ -2,7 +2,7 @@
 
 ## 适用硬件模式与现有问题
 
-上次更新: Ver. 260616
+上次更新: Ver. 260618
 
 ### DAC 设备
 
@@ -17,7 +17,7 @@
 
 北京星烁华创 (FCCTEC) - **PCIe3640** AD/DA 二合一采集卡\
 射频 DAC: 16-bit, 5 GS/s, 128K 样点缓存，双通道同信号输出\
-低速 DAC: 16-bit, 1 MS/s, 32K 样点缓存 (CH2 1G 样点), 四通道独立输出\
+低速 DAC: 16-bit, 1 MS/s, 32K 样点缓存 (CH2 1G 样点), 四通道同步独立输出\
 支持声卡：**是**
 
 现有问题：
@@ -26,17 +26,19 @@
 
 #### NI PCIe6353
 
-National Instruments (NI) - **PCIe6353** 多功能 I/O 采集卡
-
-模拟输出：4 路 AO, 16-bit；单通道最高 2.86 MSa/s，多通道最高 1.25 MSa/s。AO <0..3> 由同一个 AO Sample Clock 同步更新，支持硬件定时 waveform generation；每路 AO reference 可独立设置为 10 V, 5 V, 或 APFI <0,1> 外部参考，因此输出范围为 -AO Reference 到 +AO Reference。\
-时钟与触发：AO Start Trigger / Pause Trigger / Sample Clock 支持内部路由，也可通过 PFI <0..15> / RTSI <0..7> 等外部信号输入；AO Sample Clock Timebase 默认来自 100 MHz Timebase，也可选择 20 MHz、100 kHz 或外部 PFI 等信号。\
-模拟输入：32 路单端 / 16 路差分 AI, 16-bit；单通道最高 1.25 MSa/s，多通道最高 1 MSamples/s。AI 输入范围可按通道设置，支持 -10 V 到 10 V、-5 V 到 5 V、-2 V 到 2 V、-1 V 到 1 V 等范围；支持 DIFF、RSE、NRSE 接法。\
-适用性：PCIe6353 适合低速监测、同步控制、触发/时钟路由和振镜驱动测试；它的 AI 采样率远低于当前 OCT 原始干涉信号所需的 GS/s 级采样率，因此不能直接替代 PCIe3640 作为主 OCT ADC。\
+National Instruments (NI) - **PCIe6353** 多功能 I/O 采集卡\
+射频 DAC: **无**\
+低速 DAC: 16-bit, 1.25 MS/s (单通道 2.86 MS/s), 2G 样点缓存，四通道同步独立输出。\
+<small>&emsp;&emsp; 附共享 8K FIFO 缓存，样点较少时可直接在 FIFO 内循环，不依赖电脑持续传输；输出范围可独立设置。</small>\
+模拟输入：32 路单端 / 16 路差分模拟输入 (AI), 16-bit, 1 MS/s (单通道 1.25 MS/s).\
+<small>&emsp;&emsp; 输入范围可独立设置；支持 DIFF、RSE、NRSE 接法。</small>\
+<small>&emsp;&emsp; 适合低速监测、同步控制、触发/时钟路由和振镜驱动测试。</small>\
+数字 I/O: 48 通道，可编程为输入或输出\
 支持声卡：**是**
 
 现有问题：
 
-1. 仍未开始编写 NI-DAQmx 适配层。
+1. 已加入 NI-DAQmx AO 适配层；仍需在真实 PCIe6353 硬件上实测输出和同步触发。
 2. 需要实测 AO 输出范围、PFI 触发/时钟路由，以及与声卡 Symphonic 模式同步运行时的触发关系。
 
 ### ADC 设备
@@ -57,7 +59,7 @@ National Instruments (NI) - **PCIe6353** 多功能 I/O 采集卡
 ### 运行环境
 
 1. 如果需要使用 debug 程序，请安装最新版的 Visual Studio.
-2. 请实时更新显卡的驱动程序和 NVIDIA CUDA Toolkit（如果需要使用 CUDA 版本的话）。
+2. 如果需要使用 CUDA, 请实时更新显卡的驱动程序和 NVIDIA CUDA Toolkit. 目前 CUDA 并不会被实际调用，但是之后可能会增加一些 CUDA 相关的功能。
 3. 如果需要使用 Symphonic 模式，请在 `C:\Windows` 中安装 portaudio.
 4. 使用 Symphonic 模式时，请注意您的声卡的输出通道，并且将音量调整至 100%.
 
@@ -92,11 +94,18 @@ powershell -ExecutionPolicy Bypass -File .\tools\deploy_release.ps1 -Configurati
 
 ## 更新信息
 
+### -- Ver. 260618 --
+
+1. `NiPcie6353Dac`: 新增 NI PCIe6353 AO 后端，动态加载 `nicaiu.dll`，通过 NI-DAQmx 准备 `AO0/AO1` 的 X/Y 振镜波形输出；默认设备名为 `Dev1`，通道为 `ao0:1`，输出范围为 `±5 V`。
+2. `mainwidget` / `mythread`: 当启动时选择 `NI PCIe6353` 作为 DAC 时，X/Y 振镜信号由 NI AO 输出；PCIe3640 仍保留 RF 时基和 ADC 采集路径。3D/Cscan 下会跳过 PCIe3640 每路 1M 点上限分段检查，改为准备完整 NI AO 缓冲并启用 DAQmx regeneration。
+3. `mainwidget.ui`: 新增了 "DAC 硬件设置" 分组框，包含适用于各个硬件的参数设置。
+4. DA 输出：NI 卡的 DA FIFO 总容量为 8191 样点，如果 DA 的扫描路径长度不多于 8191 样点，则可以开启 FIFO regeneration 模式，直接由硬件 FIFO 自己循环输出，不依赖电脑内存持续传输，提升稳定性。1D 和 2D 扫描默认采用 FIFO regeneration, 仅当样点数量过多时才使用标准模式；3D 扫描总是采用标准模式。
+
 ### -- Ver. 260616a --
 
 1. `main`: 程序启动后、主界面显示前新增 DAC/ADC 设备选择对话框。DAC 可选择 `FCCTEC PCIe3640` 或 `NI PCIe6353`，ADC 当前保留 `FCCTEC PCIe3640`。
 2. `mainwidget`: 将设置拆分为 DAC、ADC 和共享参数分组；每个 DAC/ADC 设备会保存自己的硬件相关参数，同时保留 `[mainWidget]` 作为当前激活配置快照，兼容命令行转换和已保存数据 sidecar。
-3. `mainwidget`: `NI PCIe6353` 的 DAC 适配层尚未实现时，会阻止程序误走 `PCIe3640` DA 输出路径，并在主日志中提示。
+3. `mainwidget`: 初步加入 `NI PCIe6353` DAC 后端的占位保护，避免在适配层完成前误走 `PCIe3640` DA 输出路径。
 
 ### -- Ver. 260616 --
 

@@ -359,11 +359,12 @@ mythread::mythread(QObject *parent) : QObject(parent)
     m_daDelay = 0;
     m_rfDelay = 0;
     m_pwmDelay = 0;
+    m_dacBackend = DacBackend::Pcie3640;
 
     // 初始化结构体，把内部置零
     memset(&m_pciePara, 0, sizeof(PCIe3640_PARA_INIT));
     memset(&m_pcieBuf, 0, sizeof(PCIE_BUF));
-    qDebug() << "星烁华创 (fcctec) PCIe3640 数据采集卡驱动程序";
+    qDebug() << "清华大学 SSOCT 系统驱动程序";
     qDebug().noquote().nospace() << "    Ver. " << currentVersion << " 清华大学 沈逸然 石叶炅\n";
 }
 
@@ -387,6 +388,7 @@ mythread::~mythread()
     pDataX = NULL;
     pDataY = NULL;
     pDataRF = NULL;
+    m_niDac.stop();
 }
 
 // 停止采集
@@ -395,6 +397,7 @@ void mythread::StopADCapture()
     QMutexLocker locker(&mutex1); // 使用原有锁名称mutex1
     // 互斥锁确保线程安全，防止在采集过程中被调用导致资源冲突
     m_isCapturing = false;
+    m_niDac.stop();
 
     // 关闭设备
     if (m_pcieHandle != INVALID_HANDLE_VALUE)
@@ -437,6 +440,20 @@ bool mythread::InitializePositionOutputsToZero()
         return false;
 
     return WritePositionZeroToCardLocked(QStringLiteral("启动初始化"));
+}
+
+void mythread::UsePcie3640DacBackend()
+{
+    QMutexLocker locker(&mutex1);
+    m_dacBackend = DacBackend::Pcie3640;
+    m_niDac.stop();
+}
+
+void mythread::UseNiPcie6353DacBackend(const NiPcie6353DacConfig &config)
+{
+    QMutexLocker locker(&mutex1);
+    m_dacBackend = DacBackend::NiPcie6353;
+    m_niDacConfig = config;
 }
 
 void mythread::ConfigureSymphonicTiming(int ascanFreq, int moveAlineCount, bool noReturnToZero)
@@ -626,6 +643,35 @@ bool mythread::ConfigureDA(double Voltage, double galvoFreq, int AscanFreq,
     if (!GenRfSquareData())
         return false;
 
+    if (m_dacBackend == DacBackend::NiPcie6353)
+    {
+        if (!EnsureDeviceLinked())
+            return false;
+        if (!WriteRfBufferToPcieCardOnly())
+            return false;
+
+        QString diagnosticMessage;
+        QString errorMessage;
+        if (!m_niDac.prepare(m_niDacConfig,
+                             pDataX,
+                             len_XScanData,
+                             pDataY,
+                             len_YScanData,
+                             AscanFreq,
+                             &diagnosticMessage,
+                             &errorMessage))
+        {
+            return FailDAConfig(errorMessage);
+        }
+        emit acquisitionStatus(diagnosticMessage);
+        if (isFiniteVolumeScanMode(scanMode) && len_XScanData != len_YScanData)
+        {
+            emit acquisitionStatus(QStringLiteral("NI AO 诊断：NI-DAQmx 不支持 USB3020 式独立段表；当前将 X 周期扩展到 Y 的 %1 点完整缓冲后使用 regeneration。")
+                                       .arg(std::max(len_XScanData, len_YScanData)));
+        }
+        return true;
+    }
+
     if (!EnsureDeviceLinked())
         return false;
 
@@ -711,6 +757,57 @@ bool mythread::WriteDABuffersToCard()
     return true;
 }
 
+bool mythread::WriteRfBufferToPcieCardOnly()
+{
+    if (m_pcieHandle == INVALID_HANDLE_VALUE || !pDataRF)
+        return FailDAConfig(QStringLiteral("PCIe3640 RF 写入前检查失败：设备未连接，或 RF 缓冲区为空。"));
+    if (len_RfScanData == 0)
+        return FailDAConfig(QStringLiteral("PCIe3640 RF 写入前检查失败：RF 数据长度为 0。"));
+    if (len_RfScanData > LONG_MAX)
+    {
+        return FailDAConfig(QStringLiteral("PCIe3640 RF 数据长度超过 PCIe3640_SetDA 的 LONG 参数范围（RF=%1）。")
+            .arg(len_RfScanData));
+    }
+
+    const DaBufferStats rfStats = daBufferStats(pDataRF, len_RfScanData);
+    emit acquisitionStatus(QStringLiteral("DA 诊断：准备写入 PCIe3640 RF 时基，RF=%1 点（%2）；DACH1-DACH4 保持 0V，X/Y 由 NI PCIe6353 输出。")
+                               .arg(len_RfScanData)
+                               .arg(daBufferStatsText(rfStats)));
+
+    PCIe3640_intDA(m_pcieHandle);
+    unsigned short auxZeroBuffer[kAuxDaZeroBufferLength];
+    std::fill(auxZeroBuffer,
+              auxZeroBuffer + kAuxDaZeroBufferLength,
+              PositionDacZeroCode);
+    const BOOL okRF = PCIe3640_SetDA(m_pcieHandle, DA_SRC_RF, (LONG)len_RfScanData,
+                                     pDataRF, m_rfDelay, RfDacAgc);
+    const BOOL okX = PCIe3640_SetDA(m_pcieHandle, DA_SRC_DACH1,
+                                    kAuxDaZeroBufferLength, auxZeroBuffer,
+                                    m_daDelay, 0);
+    const BOOL okY = PCIe3640_SetDA(m_pcieHandle, DA_SRC_DACH2,
+                                    kAuxDaZeroBufferLength, auxZeroBuffer,
+                                    m_daDelay, 0);
+    const BOOL okAux1 = PCIe3640_SetDA(m_pcieHandle, DA_SRC_DACH3,
+                                       kAuxDaZeroBufferLength, auxZeroBuffer,
+                                       m_daDelay, 0);
+    const BOOL okAux2 = PCIe3640_SetDA(m_pcieHandle, DA_SRC_DACH4,
+                                       kAuxDaZeroBufferLength, auxZeroBuffer,
+                                       m_daDelay, 0);
+
+    if (!okRF || !okX || !okY || !okAux1 || !okAux2)
+    {
+        return FailDAConfig(QStringLiteral("调用 PCIe3640_SetDA 写入 RF/零位失败：RF=%1, X0=%2, Y0=%3, Aux1=%4, Aux2=%5；长度 RF=%6, Zero=%7。")
+            .arg(okRF).arg(okX).arg(okY).arg(okAux1).arg(okAux2)
+            .arg(len_RfScanData)
+            .arg(kAuxDaZeroBufferLength));
+    }
+
+    emit acquisitionStatus(QStringLiteral("DA 诊断：PCIe3640 RF 时基写入成功（RF delay=%1, RF AGC=%2；位置通道已配置为 0V）。")
+                               .arg(m_rfDelay)
+                               .arg(RfDacAgc));
+    return true;
+}
+
 bool mythread::StartDAScan(int scanMode)
 {
     Q_UNUSED(scanMode);
@@ -723,9 +820,22 @@ bool mythread::StartDAScan(int scanMode)
         return false;
     }
 
+    if (m_dacBackend == DacBackend::NiPcie6353)
+    {
+        QString niError;
+        if (!m_niDac.start(&niError))
+        {
+            m_lastDAError = QStringLiteral("启动 NI PCIe6353 AO 失败：%1").arg(niError);
+            emit acquisitionStatus(QStringLiteral("DA 诊断：%1").arg(m_lastDAError));
+            return false;
+        }
+    }
+
     BOOL ok = PCIe3640_StartDA(m_pcieHandle, 0x01, m_pwmDelay);
     if (!ok)
     {
+        if (m_dacBackend == DacBackend::NiPcie6353)
+            m_niDac.stop();
         m_lastDAError = QStringLiteral("启动 DA 失败：PCIe3640_StartDA 返回失败。");
         qDebug() << "[错误] StartDAScan(): 启动 DA 失败";
         emit acquisitionStatus(QStringLiteral("DA 诊断：%1").arg(m_lastDAError));
@@ -733,8 +843,16 @@ bool mythread::StartDAScan(int scanMode)
     else
     {
         m_lastDAError.clear();
-        emit acquisitionStatus(QStringLiteral("DA 诊断：PCIe3640_StartDA 启动成功（stDA=0x01, pwmDelay=%1）。")
-                                   .arg(m_pwmDelay));
+        if (m_dacBackend == DacBackend::NiPcie6353)
+        {
+            emit acquisitionStatus(QStringLiteral("DA 诊断：NI PCIe6353 AO 已启动；PCIe3640 RF 时基已启动（stDA=0x01, pwmDelay=%1）。")
+                                       .arg(m_pwmDelay));
+        }
+        else
+        {
+            emit acquisitionStatus(QStringLiteral("DA 诊断：PCIe3640_StartDA 启动成功（stDA=0x01, pwmDelay=%1）。")
+                                       .arg(m_pwmDelay));
+        }
     }
     return ok;
 }
@@ -742,6 +860,20 @@ bool mythread::StartDAScan(int scanMode)
 void mythread::StopDAScan()
 {
     QMutexLocker locker(&mutex1);
+    if (m_dacBackend == DacBackend::NiPcie6353)
+    {
+        m_niDac.stop();
+        QString niError;
+        if (!m_niDac.resetOutputsToZero(m_niDacConfig, &niError))
+        {
+            qDebug().noquote() << QStringLiteral("[警告] NI PCIe6353 AO 复位到 0V 失败：%1").arg(niError);
+            emit acquisitionStatus(QStringLiteral("DA 诊断：NI PCIe6353 AO 复位到 0V 失败：%1").arg(niError));
+        }
+        else
+        {
+            emit acquisitionStatus(QStringLiteral("DA 诊断：NI PCIe6353 AO 已停止并复位到 0V。"));
+        }
+    }
     if (m_pcieHandle != INVALID_HANDLE_VALUE)
     {
         m_lastDAError.clear();

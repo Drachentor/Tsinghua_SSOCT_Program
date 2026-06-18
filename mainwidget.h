@@ -39,6 +39,7 @@ public:
     mythread *ssoctThread;
 
     void PrintBoardInfo();
+    void PrintNiPcie6353BoardInfo();
     void PrepareProcessing1D();
     void timerEvent(QTimerEvent *event);
 
@@ -275,9 +276,12 @@ private:
     void loadSettings();
     void saveSettings() const;
     bool selectedDacUsesPcie3640() const;
+    bool selectedDacUsesNiPcie6353() const;
     bool selectedAdcUsesPcie3640() const;
     QString selectedDacDeviceName() const;
     QString selectedAdcDeviceName() const;
+    NiPcie6353DacConfig niDacConfigFromUi() const;
+    void applySelectedDacBackendToThread();
     void applyFastAxisMode(const QString &arg1, bool appendMessage);
     void initializeLogFiles();
     void appendTextEditDeltaToLog(QTextEdit *textEdit,

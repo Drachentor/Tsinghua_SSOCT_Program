@@ -44,6 +44,7 @@ SOURCES += \
         qcustomplot.cpp \
         MainWidgetUISetup.cpp \
         DeviceSettings.cpp \
+        NiPcie6353Dac.cpp \
         VesselFindingDialogUISetup.cpp \
         VesselFlowShared.cpp \
         VesselSegmenter.cpp \
@@ -68,6 +69,7 @@ HEADERS += \
         mythread.h \
         qcustomplot.h \
         MainWidgetUISetup.h \
+        NiPcie6353Dac.h \
         VesselFindingDialogUISetup.h \
         VesselFlowShared.h \
         VesselSegmenter.h \

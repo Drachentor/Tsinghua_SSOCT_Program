@@ -8,6 +8,8 @@
 #include <QThread>
 #include <QVector>
 
+#include "NiPcie6353Dac.h"
+
 //#pragma pack(push, 1) // 强制1字节对齐（匹配硬件寄存器布局）
 #include "include/PCIe3640.h"  // 引入SDK头文件
 //#pragma pack(pop)      // 恢复默认对齐（不影响其他代码）
@@ -56,6 +58,8 @@ public:
     bool ConfigureDA(double Voltage, double galvoFreq, int AscanFreq,
                      double duty_cycle, int scanMode,
                      int segmentStartCscan, int segmentCscanLen, int totalCscanLen);
+    void UsePcie3640DacBackend();
+    void UseNiPcie6353DacBackend(const NiPcie6353DacConfig &config);
     void ConfigureSymphonicTiming(int ascanFreq, int moveAlineCount, bool noReturnToZero);
     bool ConfigureSymphonicRfOnly(int ascanFreq);
     bool ConfigureSymphonicDAFromBoundPath(int ascanFreq);
@@ -113,6 +117,11 @@ private:
     static const int MinRfDacSamples = 8 * 1024;
     static const int MaxRfDacSamples = 128 * 1024;
     static const long RfDacAgc = 1023;
+    enum class DacBackend
+    {
+        Pcie3640,
+        NiPcie6353
+    };
 
 public:
     static const unsigned short plotOffset = AdcZeroCode / 16;
@@ -122,6 +131,7 @@ private:
     bool GenData(int scanMode);
     bool GenRfSquareData();
     bool WriteDABuffersToCard();
+    bool WriteRfBufferToPcieCardOnly();
     bool WritePositionZeroToCardLocked(const QString &stage);
     bool FailDAConfig(const QString &message);
     void GenData_init(int len_XscanData, int len_YscanData);
@@ -154,6 +164,9 @@ private:
     long m_rfDelay;
     long m_pwmDelay;
     QString m_lastDAError;
+    DacBackend m_dacBackend;
+    NiPcie6353DacConfig m_niDacConfig;
+    NiPcie6353Dac m_niDac;
 };
 
 #endif

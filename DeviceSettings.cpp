@@ -148,4 +148,9 @@ bool isFcctecPcie3640Adc(const QString &deviceId)
     return normalizeAdcDeviceId(deviceId) == QString::fromLatin1(kFcctecPcie3640Id);
 }
 
+bool isNiPcie6353Dac(const QString &deviceId)
+{
+    return normalizeDacDeviceId(deviceId) == QString::fromLatin1(kNiPcie6353Id);
+}
+
 } // namespace DeviceSettings

@@ -2,6 +2,7 @@
 #include "mainwidget.h"
 #include "ui_mainwidget.h"
 #include "qcolor.h"
+#include <QComboBox>
 #include <QDoubleValidator>
 #include <QFont>
 #include <QIntValidator>
@@ -86,13 +87,18 @@ void mainWidgetUISetup(Ui::mainWidget* ui)
 
     // 标题栏红色背景，tab选中蓝色，未选中灰色
     ui->tabWidget->setStyleSheet("QTabWidget#tabWidget{background-color:rgba(22,28,35,1);border: 0;}\
-                                     QTabBar::tab{background-color:rgba(22,28,35,1);color:rgb(219,219,219); font:11pt; width: 100px;height:30px;}\
-                                     QTabBar::tab::selected{background-color:rgb(32,40,50);color:rgb(219,219,219);font: bold; font-size:20px;}\
+                                     QTabBar::tab{background-color:rgba(22,28,35,1);color:rgb(219,219,219); font: 11pt; padding: 0px; height:30px;}\
+                                     QTabBar::tab:first{width:54px;}\
+                                     QTabBar::tab:middle{width:118px;}\
+                                     QTabBar::tab:last{width:86px;}\
+                                     QTabBar::tab::selected{background-color:rgb(32,40,50);color:rgb(255,255,255);font: 11pt;}\
                                      QTabWidget::tab-bar{background-color:rgb(32,40,50);border-width:0px;}");
     // 绿色背景
     ui->tab->setStyleSheet("QWidget#tab{"
                            "background-color:rgb(32,40,50);}");
     ui->tab_2->setStyleSheet("QWidget#tab_2{"
+                              "background-color:rgb(32,40,50);}");
+    ui->tab_3->setStyleSheet("QWidget#tab_3{"
                              "background-color:rgb(32,40,50);}");
     ui->tabWidget->setDocumentMode(true);
 
@@ -510,6 +516,15 @@ void mainWidgetUISetup(Ui::mainWidget* ui)
     ui->LE_BscanCycleLen->setValidator(new QIntValidator(1,
                                                          (std::numeric_limits<int>::max)(),
                                                          ui->LE_BscanCycleLen));
+    ui->LE_NIDeviceName->setAlignment(Qt::AlignLeft);
+    auto populateNiSourceCombo = [](QComboBox *combo) {
+        combo->clear();
+        combo->addItem(QStringLiteral("Internal"));
+        for (int i = 0; i <= 15; ++i)
+            combo->addItem(QStringLiteral("PFI%1").arg(i));
+    };
+    populateNiSourceCombo(ui->combo_NISampleClockSource);
+    populateNiSourceCombo(ui->combo_NIStartTriggerSource);
     ui->doubleSpinBoxw0->setAlignment(Qt::AlignHCenter);
 
     ui->amplitude->setStyleSheet("QLineEdit {background-color:rgb(55,55,55);\
@@ -583,6 +598,18 @@ void mainWidgetUISetup(Ui::mainWidget* ui)
             color:rgb(240,240,240);\
             border-radius:4px; height:25px;\
             width:100;}");
+    ui->LE_NIDeviceName->setStyleSheet(ui->LE_BscanCycleLen->styleSheet());
+    ui->label_NIParams->setStyleSheet(ui->label_23->styleSheet());
+    ui->label_PCIeParams->setStyleSheet(ui->label_NIParams->styleSheet());
+    ui->label_NIDeviceName->setStyleSheet(ui->label_23->styleSheet());
+    ui->label_NIAOChannels->setStyleSheet(ui->label_23->styleSheet());
+    ui->label_NIAORangeVolts->setStyleSheet(ui->label_23->styleSheet());
+    ui->label_NISampleClockSource->setStyleSheet(ui->label_23->styleSheet());
+    ui->label_NIStartTrigger->setStyleSheet(ui->label_23->styleSheet());
+    ui->label_NIAOChannelsValue->setStyleSheet("QLabel {color:rgb(240,240,240); font: 75 11pt;}");
+    ui->label_NIAORangeVoltsValue->setStyleSheet("QLabel {color:rgb(240,240,240); font: 75 11pt;}");
+    ui->combo_NISampleClockSource->setStyleSheet(ui->comboBox_2->styleSheet());
+    ui->combo_NIStartTriggerSource->setStyleSheet(ui->comboBox_2->styleSheet());
     ui->CB_enableContinuousMode->setStyleSheet("QCheckBox {background-color:transparent;\
             font: bold 14px;\
             color:rgb(240,240,240);}\

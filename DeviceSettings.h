@@ -39,6 +39,7 @@ QString adcSettingsGroup(const QString &deviceId);
 
 bool isFcctecPcie3640Dac(const QString &deviceId);
 bool isFcctecPcie3640Adc(const QString &deviceId);
+bool isNiPcie6353Dac(const QString &deviceId);
 
 } // namespace DeviceSettings
 

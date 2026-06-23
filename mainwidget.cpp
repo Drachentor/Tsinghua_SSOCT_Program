@@ -7,6 +7,7 @@
 #include "VesselProjectionProcessor.h"
 #include "AppVersion.h"
 #include "DeviceSettings.h"
+#include "KLinearCalibration.h"
 #include <QApplication>
 #include <QByteArray>
 #include <QCheckBox>
@@ -323,6 +324,13 @@ void savePathValue(const QString &key, const QString &filePath)
     settings.sync();
 }
 
+void clearPathValue(const QString &key)
+{
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    settings.remove(QStringLiteral("paths/") + key);
+    settings.sync();
+}
+
 void saveVesselImagePath(const QString &filePath)
 {
     savePathValue(QStringLiteral("vesselImagePath"), filePath);
@@ -363,6 +371,19 @@ struct FftFileSelection
     bool applyLogScale = true;
 };
 
+struct KLinearManualFileSelection
+{
+    QString positivePath;
+    QString negativePath;
+    QString backgroundPath;
+};
+
+struct KLinearImportFileSelection
+{
+    QString indexPath;
+    QString diagnosticsPath;
+};
+
 struct FourierSourceMetadata
 {
     bool hasSidecar = false;
@@ -379,10 +400,292 @@ struct FourierSourceMetadata
     double dispersionW0 = 0.0;
     double dispersionA1 = 0.0;
     double dispersionA2 = 0.0;
+    bool softwareKLinearEnabled = false;
+    QString sweptSourceId;
+    QString sweptSourceName;
 };
 
 const char *kSampleTypeUint16Raw = "uint16_raw";
 const char *kSampleTypeFloat32Spectrum = "float32_spectrum";
+const char *kKLinearMapFileName = "klinear_resample_indices.txt";
+const char *kKLinearDiagnosticsFileName = "klinear_resample_diagnostics.json";
+const char *kKLinearCalibrationDirName = "klinear_calibration";
+
+bool isVolumeScanModeValue(int scanMode)
+{
+    return scanMode == 3 || scanMode == 32;
+}
+
+QString kLinearSafePathSegment(const QString &value, const QString &fallback)
+{
+    const QString trimmed = value.trimmed().isEmpty() ? fallback : value.trimmed();
+    QString segment;
+    segment.reserve(trimmed.size());
+    for (const QChar &ch : trimmed) {
+        if (ch.isLetterOrNumber()
+            || ch == QLatin1Char('_')
+            || ch == QLatin1Char('-')
+            || ch == QLatin1Char('.')) {
+            segment.append(ch);
+        } else {
+            segment.append(QLatin1Char('_'));
+        }
+    }
+    return segment.isEmpty() ? fallback : segment;
+}
+
+QString kLinearScopedRelativeDir(const QString &sweptSourceId, int ascanLen)
+{
+    const QString sourceSegment = kLinearSafePathSegment(
+        DeviceSettings::normalizeSweptSourceId(sweptSourceId),
+        QStringLiteral("unknown_swept_source"));
+    return QStringLiteral("%1/%2/ascan_%3")
+        .arg(QString::fromLatin1(kKLinearCalibrationDirName),
+             sourceSegment)
+        .arg(ascanLen);
+}
+
+QString kLinearScopedRelativeMapPath(const QString &sweptSourceId, int ascanLen)
+{
+    return kLinearScopedRelativeDir(sweptSourceId, ascanLen)
+        + QStringLiteral("/")
+        + QString::fromLatin1(kKLinearMapFileName);
+}
+
+QString kLinearScopedMapPathForRoot(const QString &root,
+                                    const QString &sweptSourceId,
+                                    int ascanLen)
+{
+    return QDir(root).filePath(kLinearScopedRelativeMapPath(sweptSourceId, ascanLen));
+}
+
+QString kLinearScopedDiagnosticsPathForRoot(const QString &root,
+                                            const QString &sweptSourceId,
+                                            int ascanLen)
+{
+    return QDir(root).filePath(kLinearScopedRelativeDir(sweptSourceId, ascanLen)
+                               + QStringLiteral("/")
+                               + QString::fromLatin1(kKLinearDiagnosticsFileName));
+}
+
+QStringList kLinearMapCandidatePaths(const QString &sweptSourceId, int ascanLen)
+{
+    QStringList paths;
+    const QString appDir = QApplication::applicationDirPath();
+    paths << kLinearScopedMapPathForRoot(appDir, sweptSourceId, ascanLen);
+    paths << QDir(appDir).filePath(QStringLiteral("documents/")
+                                   + kLinearScopedRelativeMapPath(sweptSourceId, ascanLen));
+    paths << QDir(appDir).filePath(QString::fromLatin1(kKLinearMapFileName));
+    paths << QDir(appDir).filePath(QStringLiteral("documents/") + QString::fromLatin1(kKLinearMapFileName));
+
+    const QString sourceDir = defaultDialogPath();
+    paths << kLinearScopedMapPathForRoot(sourceDir, sweptSourceId, ascanLen);
+    paths << QDir(sourceDir).filePath(QStringLiteral("documents/")
+                                      + kLinearScopedRelativeMapPath(sweptSourceId, ascanLen));
+    paths << QDir(sourceDir).filePath(QString::fromLatin1(kKLinearMapFileName));
+    paths << QDir(sourceDir).filePath(QStringLiteral("documents/") + QString::fromLatin1(kKLinearMapFileName));
+    paths.removeDuplicates();
+    return paths;
+}
+
+QString kLinearStandardMapPath(const QString &sweptSourceId, int ascanLen)
+{
+    return kLinearScopedMapPathForRoot(defaultDialogPath(), sweptSourceId, ascanLen);
+}
+
+QString kLinearStandardDiagnosticsPath(const QString &sweptSourceId, int ascanLen)
+{
+    return kLinearScopedDiagnosticsPathForRoot(defaultDialogPath(), sweptSourceId, ascanLen);
+}
+
+QString kLinearDiagnosticsPathForMap(const QString &mapPath)
+{
+    return QFileInfo(mapPath).dir().filePath(QString::fromLatin1(kKLinearDiagnosticsFileName));
+}
+
+QString kLinearDialogPath()
+{
+    const QString savedPath = savedPathValue(QStringLiteral("kLinearCalibrationPath"));
+    if (!savedPath.isEmpty())
+        return dialogPathFromSavedPath(savedPath);
+    const QString volumePath = savedPathValue(QStringLiteral("volume3dSavePath"));
+    if (!volumePath.isEmpty())
+        return dialogPathFromSavedPath(volumePath);
+    return defaultDialogPath();
+}
+
+bool parseKLinearMapValue(const QStringList &tokens,
+                          int expectedTargetIndex,
+                          float *value)
+{
+    if (value == nullptr)
+        return false;
+
+    if (tokens.size() >= 2) {
+        bool firstOk = false;
+        const double firstValue = tokens.at(0).toDouble(&firstOk);
+        bool secondOk = false;
+        const double secondValue = tokens.at(1).toDouble(&secondOk);
+        if (firstOk && secondOk
+            && std::fabs(firstValue - static_cast<double>(expectedTargetIndex)) < 0.5) {
+            *value = static_cast<float>(secondValue);
+            return true;
+        }
+    }
+
+    for (const QString &token : tokens) {
+        bool ok = false;
+        const double parsed = token.toDouble(&ok);
+        if (ok) {
+            *value = static_cast<float>(parsed);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool readKLinearResampleIndexFile(const QString &filePath,
+                                  int ascanLen,
+                                  std::vector<float> *resampleIndex,
+                                  QString *errorMessage)
+{
+    if (resampleIndex == nullptr || ascanLen <= 0)
+        return false;
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("无法打开 %1：%2").arg(filePath, file.errorString());
+        return false;
+    }
+
+    QTextStream stream(&file);
+    stream.setCodec("UTF-8");
+    resampleIndex->clear();
+
+    int lineNumber = 0;
+    while (!stream.atEnd()) {
+        ++lineNumber;
+        QString line = stream.readLine().trimmed();
+        const int commentIndex = line.indexOf(QLatin1Char('#'));
+        if (commentIndex >= 0)
+            line = line.left(commentIndex).trimmed();
+        if (line.isEmpty())
+            continue;
+
+        line.replace(QLatin1Char(','), QLatin1Char(' '));
+        line.replace(QLatin1Char(';'), QLatin1Char(' '));
+        line.replace(QLatin1Char('\t'), QLatin1Char(' '));
+        const QStringList tokens = line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+
+        float value = 0.0f;
+        if (!parseKLinearMapValue(tokens, static_cast<int>(resampleIndex->size()), &value))
+            continue;
+        if (!std::isfinite(value) || value < 0.0f || value > static_cast<float>(ascanLen - 1)) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("%1 第 %2 行的源索引 %3 超出范围 [0, %4]。")
+                    .arg(filePath)
+                    .arg(lineNumber)
+                    .arg(value)
+                    .arg(ascanLen - 1);
+            }
+            return false;
+        }
+
+        resampleIndex->push_back(value);
+        if (resampleIndex->size() > static_cast<std::vector<float>::size_type>(ascanLen))
+            break;
+    }
+
+    if (resampleIndex->size() != static_cast<std::vector<float>::size_type>(ascanLen)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("%1 中有 %2 个重采样索引，但当前 AscanLen=%3。")
+                .arg(filePath)
+                .arg(static_cast<qulonglong>(resampleIndex->size()))
+                .arg(ascanLen);
+        }
+        resampleIndex->clear();
+        return false;
+    }
+
+    return true;
+}
+
+bool readKLinearDiagnosticsFile(const QString &filePath,
+                                QJsonObject *diagnostics,
+                                QString *errorMessage)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("无法打开标定诊断文件 %1：%2。")
+                .arg(filePath, file.errorString());
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("标定诊断文件 %1 格式无效：%2。")
+                .arg(filePath, parseError.errorString());
+        return false;
+    }
+
+    if (diagnostics)
+        *diagnostics = document.object();
+    return true;
+}
+
+bool validateKLinearDiagnostics(const QString &mapPath,
+                                int ascanLen,
+                                const QString &sweptSourceId,
+                                QString *errorMessage)
+{
+    const QString diagnosticsPath = kLinearDiagnosticsPathForMap(mapPath);
+    if (!QFileInfo::exists(diagnosticsPath)) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("缺少标定诊断文件 %1，无法确认标定结果对应的激光器。")
+                .arg(diagnosticsPath);
+        return false;
+    }
+
+    QJsonObject diagnostics;
+    if (!readKLinearDiagnosticsFile(diagnosticsPath, &diagnostics, errorMessage))
+        return false;
+
+    const int calibratedAscanLen = diagnostics.value(QStringLiteral("ascan_len")).toInt(-1);
+    if (calibratedAscanLen != ascanLen) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("标定结果 AscanLen=%1，但当前 AscanLen=%2。请重新选择匹配的标定文件或重新标定。")
+                .arg(calibratedAscanLen)
+                .arg(ascanLen);
+        return false;
+    }
+
+    const QString calibratedSourceId =
+        diagnostics.value(QStringLiteral("swept_source_id")).toString().trimmed();
+    if (calibratedSourceId.isEmpty()) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("标定诊断文件 %1 缺少 swept_source_id，无法确认激光器是否匹配。")
+                .arg(diagnosticsPath);
+        return false;
+    }
+
+    const QString normalizedCurrent = DeviceSettings::normalizeSweptSourceId(sweptSourceId);
+    if (calibratedSourceId.compare(normalizedCurrent, Qt::CaseInsensitive) != 0) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("标定结果对应激光器为 %1（%2），当前激光器为 %3（%4）。请使用当前激光器对应的标定文件。")
+                .arg(calibratedSourceId,
+                     DeviceSettings::sweptSourceDisplayName(calibratedSourceId),
+                     sweptSourceId,
+                     DeviceSettings::sweptSourceDisplayName(sweptSourceId));
+        }
+        return false;
+    }
+
+    return true;
+}
 
 struct PeriodicityWindowResult
 {
@@ -428,6 +731,226 @@ QString dialogStartPathFromText(const QString &filePath)
         }
     }
     return angio3dDialogPath();
+}
+
+QString kLinearDialogStartPathFromText(const QString &filePath)
+{
+    const QString cleanedPath = cleanPastedPath(filePath);
+    if (!cleanedPath.isEmpty()) {
+        const QFileInfo fileInfo(cleanedPath);
+        if (fileInfo.exists())
+            return fileInfo.absoluteFilePath();
+        if (fileInfo.absoluteDir().exists())
+            return fileInfo.absolutePath();
+    }
+    return kLinearDialogPath();
+}
+
+QString savedKLinearFilePath(const QString &key)
+{
+    const QString savedPath = savedPathValue(key);
+    return savedPath.isEmpty() ? QString() : QDir::toNativeSeparators(savedPath);
+}
+
+void addKLinearFileRow(QGridLayout *layout,
+                       QDialog *dialog,
+                       int row,
+                       const QString &labelText,
+                       QLineEdit *lineEdit,
+                       QPushButton *browseButton,
+                       const QString &placeholder)
+{
+    QLabel *label = new QLabel(labelText, dialog);
+    lineEdit->setMinimumWidth(560);
+    lineEdit->setPlaceholderText(placeholder);
+    browseButton->setText(QStringLiteral("浏览..."));
+    layout->addWidget(label, row, 0);
+    layout->addWidget(lineEdit, row, 1);
+    layout->addWidget(browseButton, row, 2);
+}
+
+bool validateExistingFile(QWidget *parent,
+                          const QString &path,
+                          const QString &label,
+                          const QString &requiredSuffix,
+                          bool allowEmpty)
+{
+    if (path.isEmpty()) {
+        if (allowEmpty)
+            return true;
+        QMessageBox::warning(parent,
+                             QStringLiteral("文件路径为空"),
+                             QStringLiteral("请填写%1。").arg(label));
+        return false;
+    }
+
+    const QFileInfo fileInfo(path);
+    if (!fileInfo.exists() || !fileInfo.isFile()) {
+        QMessageBox::warning(parent,
+                             QStringLiteral("文件不存在"),
+                             QStringLiteral("%1不存在或不是文件：\n%2").arg(label, path));
+        return false;
+    }
+    if (!requiredSuffix.isEmpty()
+        && fileInfo.suffix().compare(requiredSuffix, Qt::CaseInsensitive) != 0) {
+        QMessageBox::warning(parent,
+                             QStringLiteral("文件类型不匹配"),
+                             QStringLiteral("%1应为 .%2 文件：\n%3").arg(label, requiredSuffix, path));
+        return false;
+    }
+    return true;
+}
+
+bool selectKLinearManualFiles(QWidget *parent, KLinearManualFileSelection *selection)
+{
+    if (selection == nullptr)
+        return false;
+
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QStringLiteral("手动标定文件"));
+    dialog.setStyleSheet(kLightPathDialogStyleSheet);
+
+    QGridLayout *layout = new QGridLayout(&dialog);
+    QLineEdit *positiveEdit = new QLineEdit(&dialog);
+    QLineEdit *negativeEdit = new QLineEdit(&dialog);
+    QLineEdit *backgroundEdit = new QLineEdit(&dialog);
+    QPushButton *positiveBrowse = new QPushButton(&dialog);
+    QPushButton *negativeBrowse = new QPushButton(&dialog);
+    QPushButton *backgroundBrowse = new QPushButton(&dialog);
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                                     &dialog);
+
+    positiveEdit->setText(savedKLinearFilePath(QStringLiteral("kLinearPositivePath")));
+    negativeEdit->setText(savedKLinearFilePath(QStringLiteral("kLinearNegativePath")));
+    backgroundEdit->setText(savedKLinearFilePath(QStringLiteral("kLinearBackgroundPath")));
+    addKLinearFileRow(layout, &dialog, 0,
+                      QStringLiteral("正光程差 .3d"),
+                      positiveEdit,
+                      positiveBrowse,
+                      QStringLiteral("选择正光程差镜面 .3d 文件"));
+    addKLinearFileRow(layout, &dialog, 1,
+                      QStringLiteral("负光程差 .3d"),
+                      negativeEdit,
+                      negativeBrowse,
+                      QStringLiteral("选择负光程差镜面 .3d 文件"));
+    addKLinearFileRow(layout, &dialog, 2,
+                      QStringLiteral("本底 .3d"),
+                      backgroundEdit,
+                      backgroundBrowse,
+                      QStringLiteral("选择本底 .3d 文件"));
+    layout->addWidget(buttons, 3, 0, 1, 3);
+
+    auto browse3d = [&](QLineEdit *edit, const QString &title) {
+        const QString selectedPath = QFileDialog::getOpenFileName(
+            &dialog,
+            title,
+            kLinearDialogStartPathFromText(edit->text()),
+            QStringLiteral("3D 文件 (*.3d);;所有文件 (*.*)"));
+        if (!selectedPath.isEmpty())
+            edit->setText(QDir::toNativeSeparators(selectedPath));
+    };
+    QObject::connect(positiveBrowse, &QPushButton::clicked, &dialog, [&]() {
+        browse3d(positiveEdit, QStringLiteral("选择正光程差镜面 .3d 文件"));
+    });
+    QObject::connect(negativeBrowse, &QPushButton::clicked, &dialog, [&]() {
+        browse3d(negativeEdit, QStringLiteral("选择负光程差镜面 .3d 文件"));
+    });
+    QObject::connect(backgroundBrowse, &QPushButton::clicked, &dialog, [&]() {
+        browse3d(backgroundEdit, QStringLiteral("选择本底 .3d 文件"));
+    });
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    while (dialog.exec() == QDialog::Accepted) {
+        const QString positivePath = cleanPastedPath(positiveEdit->text());
+        const QString negativePath = cleanPastedPath(negativeEdit->text());
+        const QString backgroundPath = cleanPastedPath(backgroundEdit->text());
+        if (!validateExistingFile(&dialog, positivePath, QStringLiteral("正光程差文件"), QStringLiteral("3d"), false)
+            || !validateExistingFile(&dialog, negativePath, QStringLiteral("负光程差文件"), QStringLiteral("3d"), false)
+            || !validateExistingFile(&dialog, backgroundPath, QStringLiteral("本底文件"), QStringLiteral("3d"), false)) {
+            continue;
+        }
+
+        selection->positivePath = QFileInfo(positivePath).absoluteFilePath();
+        selection->negativePath = QFileInfo(negativePath).absoluteFilePath();
+        selection->backgroundPath = QFileInfo(backgroundPath).absoluteFilePath();
+        return true;
+    }
+    return false;
+}
+
+bool selectKLinearImportFiles(QWidget *parent, KLinearImportFileSelection *selection)
+{
+    if (selection == nullptr)
+        return false;
+
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QStringLiteral("从文件读取波数线性化表"));
+    dialog.setStyleSheet(kLightPathDialogStyleSheet);
+
+    QGridLayout *layout = new QGridLayout(&dialog);
+    QLineEdit *indexEdit = new QLineEdit(&dialog);
+    QLineEdit *diagnosticsEdit = new QLineEdit(&dialog);
+    QPushButton *indexBrowse = new QPushButton(&dialog);
+    QPushButton *diagnosticsBrowse = new QPushButton(&dialog);
+    QPushButton *diagnosticsClear = new QPushButton(QStringLiteral("清空"), &dialog);
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                                     &dialog);
+
+    indexEdit->setText(savedKLinearFilePath(QStringLiteral("kLinearImportIndexPath")));
+    diagnosticsEdit->setText(savedKLinearFilePath(QStringLiteral("kLinearImportDiagnosticsPath")));
+    addKLinearFileRow(layout, &dialog, 0,
+                      QStringLiteral("重采样表 .txt"),
+                      indexEdit,
+                      indexBrowse,
+                      QStringLiteral("选择 klinear_resample_indices.txt 或外部重采样表"));
+    addKLinearFileRow(layout, &dialog, 1,
+                      QStringLiteral("诊断 .json"),
+                      diagnosticsEdit,
+                      diagnosticsBrowse,
+                      QStringLiteral("可选；留空时由程序补齐基本诊断字段"));
+    layout->addWidget(diagnosticsClear, 1, 3);
+    layout->addWidget(buttons, 2, 0, 1, 4);
+
+    QObject::connect(indexBrowse, &QPushButton::clicked, &dialog, [&]() {
+        const QString selectedPath = QFileDialog::getOpenFileName(
+            &dialog,
+            QStringLiteral("选择重采样表 .txt 文件"),
+            kLinearDialogStartPathFromText(indexEdit->text()),
+            QStringLiteral("文本文件 (*.txt);;所有文件 (*.*)"));
+        if (!selectedPath.isEmpty())
+            indexEdit->setText(QDir::toNativeSeparators(selectedPath));
+    });
+    QObject::connect(diagnosticsBrowse, &QPushButton::clicked, &dialog, [&]() {
+        const QString selectedPath = QFileDialog::getOpenFileName(
+            &dialog,
+            QStringLiteral("可选：选择诊断 JSON 文件"),
+            kLinearDialogStartPathFromText(diagnosticsEdit->text().isEmpty()
+                                           ? indexEdit->text()
+                                           : diagnosticsEdit->text()),
+            QStringLiteral("JSON 文件 (*.json);;所有文件 (*.*)"));
+        if (!selectedPath.isEmpty())
+            diagnosticsEdit->setText(QDir::toNativeSeparators(selectedPath));
+    });
+    QObject::connect(diagnosticsClear, &QPushButton::clicked, diagnosticsEdit, &QLineEdit::clear);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    while (dialog.exec() == QDialog::Accepted) {
+        const QString indexPath = cleanPastedPath(indexEdit->text());
+        const QString diagnosticsPath = cleanPastedPath(diagnosticsEdit->text());
+        if (!validateExistingFile(&dialog, indexPath, QStringLiteral("重采样表"), QStringLiteral("txt"), false)
+            || !validateExistingFile(&dialog, diagnosticsPath, QStringLiteral("诊断 JSON"), QStringLiteral("json"), true)) {
+            continue;
+        }
+
+        selection->indexPath = QFileInfo(indexPath).absoluteFilePath();
+        selection->diagnosticsPath = diagnosticsPath.isEmpty()
+            ? QString()
+            : QFileInfo(diagnosticsPath).absoluteFilePath();
+        return true;
+    }
+    return false;
 }
 
 bool selectAngioFileAndOptions(QWidget *parent, AngioFileSelection *selection)
@@ -750,7 +1273,8 @@ QStringList commonSettingKeys()
         QStringLiteral("filterY"),
         QStringLiteral("dispersionW0"),
         QStringLiteral("dispersionA1"),
-        QStringLiteral("dispersionA2")
+        QStringLiteral("dispersionA2"),
+        QStringLiteral("softwareKLinearEnabled")
     };
 }
 
@@ -1007,6 +1531,11 @@ void applySettingsObjectToMetadata(const QJsonObject &mainSettings, FourierSourc
     metadata->dispersionW0 = jsonDoubleValue(mainSettings, QStringLiteral("dispersionW0"), metadata->dispersionW0);
     metadata->dispersionA1 = jsonDoubleValue(mainSettings, QStringLiteral("dispersionA1"), metadata->dispersionA1);
     metadata->dispersionA2 = jsonDoubleValue(mainSettings, QStringLiteral("dispersionA2"), metadata->dispersionA2);
+    metadata->softwareKLinearEnabled =
+        mainSettings.value(QStringLiteral("softwareKLinearEnabled")).toBool(metadata->softwareKLinearEnabled);
+    metadata->sweptSourceId =
+        DeviceSettings::normalizeSweptSourceId(mainSettings.value(QStringLiteral("sweptSourceId")).toString(metadata->sweptSourceId));
+    metadata->sweptSourceName = DeviceSettings::sweptSourceDisplayName(metadata->sweptSourceId);
     const QString scanModeText = mainSettings.value(QStringLiteral("scanMode")).toString();
     if (!scanModeText.isEmpty()) {
         metadata->scanModeText = scanModeText;
@@ -1048,6 +1577,13 @@ bool readFourierSidecar(const QString &dataFilePath,
         metadata->dispersionW0 = iniSidecar.value(QStringLiteral("dispersionW0"), metadata->dispersionW0).toDouble();
         metadata->dispersionA1 = iniSidecar.value(QStringLiteral("dispersionA1"), metadata->dispersionA1).toDouble();
         metadata->dispersionA2 = iniSidecar.value(QStringLiteral("dispersionA2"), metadata->dispersionA2).toDouble();
+        metadata->softwareKLinearEnabled =
+            iniSidecar.value(QStringLiteral("softwareKLinearEnabled"),
+                             metadata->softwareKLinearEnabled).toBool();
+        metadata->sweptSourceId =
+            DeviceSettings::normalizeSweptSourceId(iniSidecar.value(QStringLiteral("sweptSourceId"),
+                                                                    metadata->sweptSourceId).toString());
+        metadata->sweptSourceName = DeviceSettings::sweptSourceDisplayName(metadata->sweptSourceId);
         const QString scanModeText = iniSidecar.value(QStringLiteral("scanMode"), metadata->scanModeText).toString();
         iniSidecar.endGroup();
 
@@ -1079,6 +1615,12 @@ bool readFourierSidecar(const QString &dataFilePath,
     metadata->sampleType = acquisition.value(QStringLiteral("sampleType")).toString(metadata->sampleType);
     metadata->preprocessedSpectrum =
         acquisition.value(QStringLiteral("preprocessedSpectrum")).toBool(metadata->preprocessedSpectrum);
+    metadata->softwareKLinearEnabled =
+        acquisition.value(QStringLiteral("softwareKLinearEnabled")).toBool(metadata->softwareKLinearEnabled);
+    metadata->sweptSourceId =
+        DeviceSettings::normalizeSweptSourceId(acquisition.value(QStringLiteral("sweptSourceId")).toString(metadata->sweptSourceId));
+    metadata->sweptSourceName =
+        acquisition.value(QStringLiteral("sweptSourceName")).toString(DeviceSettings::sweptSourceDisplayName(metadata->sweptSourceId));
 
     if (metadata->scanModeText.isEmpty())
         metadata->scanModeText = scanModeTextForMode(metadata->scanMode);
@@ -2064,7 +2606,8 @@ mainWidget::mainWidget(QWidget *parent):
     m_captureLogTextLength(0),
     m_logFilesInitialized(false),
     m_selectedDacDeviceId(DeviceSettings::defaultDacDeviceId()),
-    m_selectedAdcDeviceId(DeviceSettings::defaultAdcDeviceId())
+    m_selectedAdcDeviceId(DeviceSettings::defaultAdcDeviceId()),
+    m_selectedSweptSourceId(DeviceSettings::defaultSweptSourceId())
 {
     // UI 设置
     ui->setupUi(this);
@@ -2086,6 +2629,9 @@ mainWidget::mainWidget(QWidget *parent):
     p_A2 = nullptr;
     p_A3 = nullptr;
     p_A4 = nullptr;
+    m_kLinearMapAscanLen = 0;
+    m_kLinearMapSweptSourceId.clear();
+    m_kLinearMapWarningShown = false;
     m_cosphy = nullptr;
     m_sinphy = nullptr;
     m_Cdata = nullptr;
@@ -2097,6 +2643,7 @@ mainWidget::mainWidget(QWidget *parent):
     ui->textEdit->append(QStringLiteral("Ver. ") + QString::fromLatin1(currentVersion));
     ui->textEdit->append(QStringLiteral("DAC 设备：%1").arg(selectedDacDeviceName()));
     ui->textEdit->append(QStringLiteral("ADC 设备：%1").arg(selectedAdcDeviceName()));
+    ui->textEdit->append(QStringLiteral("扫频光源：%1").arg(selectedSweptSourceName()));
     ui->textEdit->append("沈逸然 石叶炅\n");
     QString audioStatusMessage;
     QString audioErrorMessage;
@@ -2408,6 +2955,11 @@ bool mainWidget::readSysParametersFromUi()
     if (ascanLenChanged)
     {
         m_lastAscanForSave.clear();
+        m_kLinearResampleIndex.clear();
+        m_kLinearMapAscanLen = 0;
+        m_kLinearMapPath.clear();
+        m_kLinearMapSweptSourceId.clear();
+        m_kLinearMapWarningShown = false;
         if (m_cosphy != nullptr)
             mkl_ascend(m_cosphy);
         if (m_sinphy != nullptr)
@@ -2563,12 +3115,112 @@ void mainWidget::resetSpectralWindow()
     }
 }
 
+bool mainWidget::softwareKLinearizationEnabled() const
+{
+    return ui->CB_softwareKLinear->isChecked();
+}
+
+bool mainWidget::ensureKLinearizationMap(int ascanLen, bool appendMessage, const QString &sweptSourceId)
+{
+    if (ascanLen <= 0)
+        return false;
+
+    const QString currentSourceId = DeviceSettings::normalizeSweptSourceId(
+        sweptSourceId.isEmpty() ? m_selectedSweptSourceId : sweptSourceId);
+    const QString currentSourceName = DeviceSettings::sweptSourceDisplayName(currentSourceId);
+    if (m_kLinearMapAscanLen == ascanLen
+        && m_kLinearMapSweptSourceId == currentSourceId
+        && m_kLinearResampleIndex.size() == static_cast<std::vector<float>::size_type>(ascanLen))
+        return true;
+
+    std::vector<float> loadedMap;
+    QString lastError;
+    for (const QString &path : kLinearMapCandidatePaths(currentSourceId, ascanLen)) {
+        if (!QFileInfo::exists(path))
+            continue;
+
+        QString errorMessage;
+        if (validateKLinearDiagnostics(path, ascanLen, currentSourceId, &errorMessage)
+            && readKLinearResampleIndexFile(path, ascanLen, &loadedMap, &errorMessage)) {
+            m_kLinearResampleIndex.swap(loadedMap);
+            m_kLinearMapAscanLen = ascanLen;
+            m_kLinearMapPath = path;
+            m_kLinearMapSweptSourceId = currentSourceId;
+            m_kLinearMapWarningShown = false;
+            if (appendMessage) {
+                ui->textEdit->append(QStringLiteral("软件波数线性化：已加载 %1 对应的重采样表 %2。")
+                                     .arg(currentSourceName,
+                                          QDir::toNativeSeparators(path)));
+            }
+            return true;
+        }
+        lastError = errorMessage;
+    }
+
+    m_kLinearResampleIndex.clear();
+    m_kLinearMapAscanLen = 0;
+    m_kLinearMapPath.clear();
+    m_kLinearMapSweptSourceId.clear();
+    if (appendMessage && !m_kLinearMapWarningShown) {
+        QStringList displayPaths;
+        for (const QString &path : kLinearMapCandidatePaths(currentSourceId, ascanLen))
+            displayPaths << QDir::toNativeSeparators(path);
+        ui->textEdit->append(QStringLiteral("软件波数线性化未启用：未找到与当前激光器 %1、AscanLen=%2 匹配的有效 %3。查找位置：%4%5")
+                             .arg(currentSourceName)
+                             .arg(ascanLen)
+                             .arg(kLinearScopedRelativeMapPath(currentSourceId, ascanLen))
+                             .arg(displayPaths.join(QStringLiteral("；")))
+                             .arg(lastError.isEmpty()
+                                  ? QString()
+                                  : QStringLiteral("；最后错误：%1").arg(lastError)));
+        m_kLinearMapWarningShown = true;
+    }
+    return false;
+}
+
+void mainWidget::applyKLinearizationToSpectra(float *spectra, int ascanLen, int lineCount) const
+{
+    if (spectra == nullptr || ascanLen <= 0 || lineCount <= 0
+        || m_kLinearResampleIndex.size() != static_cast<std::vector<float>::size_type>(ascanLen))
+        return;
+
+    std::vector<float> source(static_cast<size_t>(ascanLen), 0.0f);
+    for (int line = 0; line < lineCount; ++line) {
+        float *lineData = spectra + static_cast<qint64>(line) * ascanLen;
+        std::copy(lineData, lineData + ascanLen, source.begin());
+
+        for (int z = 0; z < ascanLen; ++z) {
+            const float sourceIndex = m_kLinearResampleIndex[static_cast<size_t>(z)];
+            const int left = std::max(0, std::min(ascanLen - 1, static_cast<int>(std::floor(sourceIndex))));
+            const int right = std::min(ascanLen - 1, left + 1);
+            const float fraction = sourceIndex - static_cast<float>(left);
+            lineData[z] = source[static_cast<size_t>(left)] * (1.0f - fraction)
+                + source[static_cast<size_t>(right)] * fraction;
+        }
+    }
+}
+
+bool mainWidget::applySoftwareKLinearizationIfNeeded(float *spectra,
+                                                     int ascanLen,
+                                                     int lineCount,
+                                                     bool appendMessage)
+{
+    if (!softwareKLinearizationEnabled())
+        return true;
+    if (!ensureKLinearizationMap(ascanLen, appendMessage))
+        return false;
+
+    applyKLinearizationToSpectra(spectra, ascanLen, lineCount);
+    return true;
+}
+
 void mainWidget::loadSettings()
 {
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
     seedCategorizedSettingsFromLegacy(settings);
     m_selectedDacDeviceId = DeviceSettings::selectedDacDeviceId(settings);
     m_selectedAdcDeviceId = DeviceSettings::selectedAdcDeviceId(settings);
+    m_selectedSweptSourceId = DeviceSettings::selectedSweptSourceId(settings);
 
     const QString dacGroup = DeviceSettings::dacSettingsGroup(m_selectedDacDeviceId);
     const QString adcGroup = DeviceSettings::adcSettingsGroup(m_selectedAdcDeviceId);
@@ -2643,12 +3295,17 @@ void mainWidget::loadSettings()
     ui->doubleSpinBoxw0->setValue(commonValue(QStringLiteral("dispersionW0"), ui->doubleSpinBoxw0->value()).toDouble());
     ui->doubleSpinBoxa1->setValue(commonValue(QStringLiteral("dispersionA1"), ui->doubleSpinBoxa1->value()).toDouble());
     ui->doubleSpinBoxa2->setValue(commonValue(QStringLiteral("dispersionA2"), ui->doubleSpinBoxa2->value()).toDouble());
+    ui->CB_softwareKLinear->setChecked(
+        commonValue(QStringLiteral("softwareKLinearEnabled"),
+                    ui->CB_softwareKLinear->isChecked()).toBool());
 }
 
 void mainWidget::saveSettings() const
 {
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
     DeviceSettings::saveSelectedDevices(settings, m_selectedDacDeviceId, m_selectedAdcDeviceId);
+    settings.setValue(QStringLiteral("devices/selectedSweptSourceId"),
+                      DeviceSettings::normalizeSweptSourceId(m_selectedSweptSourceId));
 
     const QString dacGroup = DeviceSettings::dacSettingsGroup(m_selectedDacDeviceId);
     const QString adcGroup = DeviceSettings::adcSettingsGroup(m_selectedAdcDeviceId);
@@ -2698,6 +3355,8 @@ void mainWidget::saveSettings() const
     setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("dispersionW0"), ui->doubleSpinBoxw0->value());
     setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("dispersionA1"), ui->doubleSpinBoxa1->value());
     setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("dispersionA2"), ui->doubleSpinBoxa2->value());
+    setGroupedAndLegacyValue(settings, commonGroup, QStringLiteral("softwareKLinearEnabled"),
+                             ui->CB_softwareKLinear->isChecked());
     settings.sync();
 }
 
@@ -2713,6 +3372,9 @@ void mainWidget::updateControlState()
     ui->Line_continuousCount->setEnabled(!m_scanActive && !m_adReady && ui->CB_enableContinuousMode->isChecked());
     ui->Line_realtimeShowInterval->setEnabled(!m_scanActive);
     ui->button_FFT->setEnabled(!m_scanActive);
+    ui->button_manualKLinear->setEnabled(!m_scanActive);
+    ui->button_readKLinearFromFile->setEnabled(!m_scanActive);
+    ui->CB_softwareKLinear->setEnabled(!m_scanActive);
     ui->CB_fourierOnSaved->setEnabled(!m_scanActive);
     ui->CB_enableDAInSymphonic->setEnabled(!m_scanActive);
 
@@ -2756,6 +3418,11 @@ QString mainWidget::selectedDacDeviceName() const
 QString mainWidget::selectedAdcDeviceName() const
 {
     return DeviceSettings::adcDeviceDisplayName(m_selectedAdcDeviceId);
+}
+
+QString mainWidget::selectedSweptSourceName() const
+{
+    return DeviceSettings::sweptSourceDisplayName(m_selectedSweptSourceId);
 }
 
 NiPcie6353DacConfig mainWidget::niDacConfigFromUi() const
@@ -2819,7 +3486,7 @@ void mainWidget::killActiveTimers()
 
 bool mainWidget::isVolumeScanMode() const
 {
-    return mainWidget::scanMode == 3 || mainWidget::scanMode == 32;
+    return isVolumeScanModeValue(mainWidget::scanMode);
 }
 
 bool mainWidget::isContinuousAcquisitionMode() const
@@ -2931,7 +3598,7 @@ bool mainWidget::configureVolumeSegmentationFromCurrentParams()
     }
 
     const int estimatedSegmentCount = static_cast<int>(ceilDiv(m_CscanLen, maxCscanPerSegment));
-    const QString message =
+    QString message =
         QStringLiteral("当前 %1 的 Y 路 DAC 需要 %2 点，超过 PCIe3640 每路 %3 点上限。\n\n"
                        "按当前帧率、占空比和 Angio 重复次数估算，每段最多约 %4 个 Bscan，预计需要分 %5 段。\n\n"
                        "是否接受多段扫描？程序会按 Bscan 数量平均分段，并自动连续扫描。")
@@ -3354,6 +4021,149 @@ void mainWidget::on_AutoDecideBscanLength_clicked()
     // m_BscanLen = temp_BscanLen;
 }
 
+void mainWidget::on_button_manualKLinear_clicked()
+{
+    if (m_scanActive) {
+        ui->textEdit->append(QStringLiteral("正在扫描，暂不能进行波数线性化标定。"));
+        return;
+    }
+    if (!readSysParametersFromUi())
+        return;
+
+    KLinearManualFileSelection files;
+    if (!selectKLinearManualFiles(this, &files))
+        return;
+    savePathValue(QStringLiteral("kLinearPositivePath"), files.positivePath);
+    savePathValue(QStringLiteral("kLinearNegativePath"), files.negativePath);
+    savePathValue(QStringLiteral("kLinearBackgroundPath"), files.backgroundPath);
+    savePathValue(QStringLiteral("kLinearCalibrationPath"), files.backgroundPath);
+
+    KLinearCalibration::GenerateOptions options;
+    const QString currentSourceId = DeviceSettings::normalizeSweptSourceId(m_selectedSweptSourceId);
+    options.positivePath = files.positivePath;
+    options.negativePath = files.negativePath;
+    options.backgroundPath = files.backgroundPath;
+    options.outputPath = kLinearStandardMapPath(currentSourceId, m_AscanLen);
+    options.diagnosticsPath = kLinearStandardDiagnosticsPath(currentSourceId, m_AscanLen);
+    options.sweptSourceId = currentSourceId;
+    options.sweptSourceName = selectedSweptSourceName();
+    options.expectedAscanLen = m_AscanLen;
+
+    ui->textEdit->append(QStringLiteral("正在生成软件波数线性化标定文件，请稍候..."));
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const KLinearCalibration::Result result =
+        KLinearCalibration::generateFromMirrorFiles(options);
+    QApplication::restoreOverrideCursor();
+
+    if (!result.ok) {
+        ui->textEdit->append(QStringLiteral("波数线性化标定失败：%1").arg(result.errorMessage));
+        QMessageBox::warning(this,
+                             QStringLiteral("标定失败"),
+                             result.errorMessage);
+        return;
+    }
+
+    m_kLinearResampleIndex = result.resampleIndices;
+    m_kLinearMapAscanLen = result.ascanLen;
+    m_kLinearMapPath = result.outputPath;
+    m_kLinearMapSweptSourceId = currentSourceId;
+    m_kLinearMapWarningShown = false;
+
+    QString message = QStringLiteral("波数线性化标定完成：已生成 %1 和 %2。RMS 校正=%3 samples，最大校正=%4 samples。")
+        .arg(QDir::toNativeSeparators(result.outputPath),
+             QDir::toNativeSeparators(result.diagnosticsPath))
+        .arg(result.correctionRmsSamples, 0, 'g', 5)
+        .arg(result.correctionMaxAbsSamples, 0, 'g', 5);
+    if (result.polyDegreeAutoDowngraded) {
+        message += QStringLiteral(" 多项式拟合已从 %1 阶自动降到 %2 阶以保持相位单调。")
+            .arg(result.requestedPolyDegree)
+            .arg(result.polyDegree);
+    }
+    ui->textEdit->append(message);
+    appendInfoLogLine(message);
+    QMessageBox::information(this,
+                             QStringLiteral("标定完成"),
+                             QStringLiteral("已生成当前扫频光源专属的 klinear_resample_indices.txt。\n使用时请勾选“软件波数线性化”。"));
+}
+
+void mainWidget::on_button_readKLinearFromFile_clicked()
+{
+    if (m_scanActive) {
+        ui->textEdit->append(QStringLiteral("正在扫描，暂不能导入波数线性化文件。"));
+        return;
+    }
+    if (!readSysParametersFromUi())
+        return;
+
+    KLinearImportFileSelection files;
+    if (!selectKLinearImportFiles(this, &files))
+        return;
+    savePathValue(QStringLiteral("kLinearImportIndexPath"), files.indexPath);
+    if (files.diagnosticsPath.isEmpty())
+        clearPathValue(QStringLiteral("kLinearImportDiagnosticsPath"));
+    else
+        savePathValue(QStringLiteral("kLinearImportDiagnosticsPath"), files.diagnosticsPath);
+    savePathValue(QStringLiteral("kLinearCalibrationPath"),
+                  files.diagnosticsPath.isEmpty() ? files.indexPath : files.diagnosticsPath);
+
+    KLinearCalibration::ImportOptions options;
+    const QString currentSourceId = DeviceSettings::normalizeSweptSourceId(m_selectedSweptSourceId);
+    options.inputPath = files.indexPath;
+    options.inputDiagnosticsPath = files.diagnosticsPath;
+    options.outputPath = kLinearStandardMapPath(currentSourceId, m_AscanLen);
+    options.diagnosticsPath = kLinearStandardDiagnosticsPath(currentSourceId, m_AscanLen);
+    options.sweptSourceId = currentSourceId;
+    options.sweptSourceName = selectedSweptSourceName();
+    options.expectedAscanLen = m_AscanLen;
+
+    KLinearCalibration::Result result =
+        KLinearCalibration::importFromIndexFile(options);
+    if (!result.ok && result.ascanLenMismatch) {
+        const QMessageBox::StandardButton rescale =
+            QMessageBox::question(this,
+                                  QStringLiteral("Ascan 长度不匹配"),
+                                  QStringLiteral("所选标定文件包含 %1 个重采样索引，但当前 AscanLen=%2。\n是否将 X 和 Y 都按比例放缩后导入？")
+                                      .arg(result.sourceAscanLen)
+                                      .arg(m_AscanLen),
+                                  QMessageBox::Yes | QMessageBox::No,
+                                  QMessageBox::No);
+        if (rescale == QMessageBox::Yes) {
+            options.rescaleToExpectedAscanLen = true;
+            result = KLinearCalibration::importFromIndexFile(options);
+        }
+    }
+    if (!result.ok) {
+        ui->textEdit->append(QStringLiteral("导入波数线性化文件失败：%1").arg(result.errorMessage));
+        QMessageBox::warning(this,
+                             QStringLiteral("导入失败"),
+                             result.errorMessage);
+        return;
+    }
+
+    m_kLinearResampleIndex = result.resampleIndices;
+    m_kLinearMapAscanLen = result.ascanLen;
+    m_kLinearMapPath = result.outputPath;
+    m_kLinearMapSweptSourceId = currentSourceId;
+    m_kLinearMapWarningShown = false;
+
+    QString message =
+        QStringLiteral("波数线性化文件导入完成：已写入 %1 和 %2。RMS 校正=%3 samples，最大校正=%4 samples。")
+            .arg(QDir::toNativeSeparators(result.outputPath),
+                 QDir::toNativeSeparators(result.diagnosticsPath))
+            .arg(result.correctionRmsSamples, 0, 'g', 5)
+            .arg(result.correctionMaxAbsSamples, 0, 'g', 5);
+    if (result.rescaled) {
+        message += QStringLiteral(" 已将原始 AscanLen=%1 的标定表等比例放缩到当前 AscanLen=%2。")
+            .arg(result.sourceAscanLen)
+            .arg(result.ascanLen);
+    }
+    ui->textEdit->append(message);
+    appendInfoLogLine(message);
+    QMessageBox::information(this,
+                             QStringLiteral("导入完成"),
+                             QStringLiteral("已生成当前扫频光源专属的 klinear_resample_indices.txt。\n使用时请勾选“软件波数线性化”。"));
+}
+
 void mainWidget::on_V_ConvertAngioToImage_clicked()
 {
     saveSettings();
@@ -3720,6 +4530,14 @@ void mainWidget::on_startButton_clicked()
         updateControlState();
         return;
     }
+    if (softwareKLinearizationEnabled()
+        && !ensureKLinearizationMap(m_AscanLen, true))
+    {
+        ui->textEdit->append(QStringLiteral("开始扫描已取消：已勾选软件波数线性化，但没有可用的重采样表。请先生成或放置 %1，或取消勾选。")
+                             .arg(kLinearScopedRelativeMapPath(m_selectedSweptSourceId, m_AscanLen)));
+        updateControlState();
+        return;
+    }
     if (!firstThread->isRunning())
         firstThread->start();
 
@@ -3944,6 +4762,13 @@ void mainWidget::timerEvent(QTimerEvent *event)
 
         float* datainfer = new float[m_AscanLen];
         removeBGForAscan(datainfer, m_curDisplayData);
+        if (!applySoftwareKLinearizationIfNeeded(datainfer, m_AscanLen, 1, true))
+        {
+            delete [] datainfer;
+            delete [] m_curDisplayData;
+            m_curDisplayData = nullptr;
+            return;
+        }
 
         cosplot(datainfer);
         fftplot(datainfer);
@@ -4010,6 +4835,14 @@ void mainWidget::timerEvent(QTimerEvent *event)
 
         p_F2 = new float[m_AscanLen * m_BscanLen];
         removeBGForBscan(p_F2, m_curDisplayData);
+        if (!applySoftwareKLinearizationIfNeeded(p_F2, m_AscanLen, m_BscanLen, true))
+        {
+            delete [] m_curDisplayData;
+            delete [] p_F2;
+            m_curDisplayData = nullptr;
+            p_F2 = nullptr;
+            return;
+        }
         if (mainWidget::scanMode == 2
             || mainWidget::scanMode == 42
             || mainWidget::scanMode == kSymphonicScanMode
@@ -4060,6 +4893,12 @@ void mainWidget::timerEvent(QTimerEvent *event)
                 removeBGForBscanDouble(p_A3,
                                        recentBscans.data(),
                                        recentBscans.data() + 2 * bscanSampleCount);
+                if (!applySoftwareKLinearizationIfNeeded(p_A3, m_AscanLen, m_BscanLen * 2, true))
+                {
+                    delete [] p_A3;
+                    p_A3 = nullptr;
+                    return;
+                }
                 
                 fftBscanAngio2(p_A3);
 
@@ -4091,6 +4930,17 @@ void mainWidget::timerEvent(QTimerEvent *event)
                 p_A3 = new float[m_AscanLen * 2 * m_BscanLen];
                 crossSave = new float[m_AscanLen * 2 * m_BscanLen];
                 removeBGForBscanDouble(p_A3, m_curDisplayDataAngio1, m_curDisplayDataAngio2);
+                if (!applySoftwareKLinearizationIfNeeded(p_A3, m_AscanLen, m_BscanLen * 2, true))
+                {
+                    delete [] p_A3;
+                    delete [] crossSave;
+                    crossSave = nullptr;
+                    delete [] m_curDisplayDataAngio1;
+                    delete [] m_curDisplayDataAngio2;
+                    m_curDisplayDataAngio1 = nullptr;
+                    m_curDisplayDataAngio2 = nullptr;
+                    return;
+                }
                 memcpy(crossSave, p_A3, sizeof(float) * m_AscanLen * 2 * m_BscanLen);
 
                 plotMiddleBscanAline(p_A3);
@@ -4569,6 +5419,8 @@ bool mainWidget::writeAcquisitionJson(const QString &filePath,
     acquisition.insert(QStringLiteral("scanModeText"), ui->comboBox->currentText());
     acquisition.insert(QStringLiteral("triggerMode"), ui->combo_triggerMode->currentText());
     acquisition.insert(QStringLiteral("clockMode"), ui->combo_clockMode->currentText());
+    acquisition.insert(QStringLiteral("sweptSourceId"), DeviceSettings::normalizeSweptSourceId(m_selectedSweptSourceId));
+    acquisition.insert(QStringLiteral("sweptSourceName"), selectedSweptSourceName());
     acquisition.insert(QStringLiteral("scanMode"), mainWidget::scanMode);
     acquisition.insert(QStringLiteral("ascanLen"), m_AscanLen);
     acquisition.insert(QStringLiteral("bscanLen"), m_BscanLen);
@@ -4581,6 +5433,7 @@ bool mainWidget::writeAcquisitionJson(const QString &filePath,
     acquisition.insert(QStringLiteral("backgroundRemoved"), backgroundRemoved);
     acquisition.insert(QStringLiteral("windowApplied"), windowApplied);
     acquisition.insert(QStringLiteral("logScaled"), logScaled);
+    acquisition.insert(QStringLiteral("softwareKLinearEnabled"), ui->CB_softwareKLinear->isChecked());
 
     QJsonObject root;
     root.insert(QStringLiteral("formatVersion"), 1);
@@ -4625,7 +5478,13 @@ bool mainWidget::finalizeSavedDataFile(const QString &filePath,
     if (!ui->CB_fourierOnSaved->isChecked())
         return true;
 
-    ui->textEdit->append(QStringLiteral("保存后自动开始傅里叶变换。"));
+    if (ui->CB_softwareKLinear->isChecked() && isVolumeScanMode()) {
+        ui->textEdit->append(QStringLiteral("3D/Cscan 采集和原始数据保存完成；现在开始对保存数据进行软件波数线性化和傅里叶变换。"));
+    } else if (ui->CB_softwareKLinear->isChecked()) {
+        ui->textEdit->append(QStringLiteral("保存完成；现在开始对保存数据进行软件波数线性化和傅里叶变换。"));
+    } else {
+        ui->textEdit->append(QStringLiteral("保存后自动开始傅里叶变换。"));
+    }
     const bool fftOk = processFourierFile(filePath, true, true, true, false);
     if (!fftOk)
         ui->textEdit->append(QStringLiteral("自动傅里叶变换失败，原始数据和设置 JSON 已保留。"));
@@ -4661,6 +5520,9 @@ bool mainWidget::processFourierFile(const QString &filePath,
     metadata.dispersionW0 = ui->doubleSpinBoxw0->value();
     metadata.dispersionA1 = ui->doubleSpinBoxa1->value();
     metadata.dispersionA2 = ui->doubleSpinBoxa2->value();
+    metadata.softwareKLinearEnabled = ui->CB_softwareKLinear->isChecked();
+    metadata.sweptSourceId = DeviceSettings::normalizeSweptSourceId(m_selectedSweptSourceId);
+    metadata.sweptSourceName = selectedSweptSourceName();
 
     const QString sidecarPath = sidecarPathForDataFile(filePath);
     const bool sidecarExists = QFileInfo::exists(sidecarPath);
@@ -4713,12 +5575,29 @@ bool mainWidget::processFourierFile(const QString &filePath,
                          .arg(metadata.bscanLen)
                          .arg(totalLines)
                          .arg(metadata.storedBscanCount));
+    ui->textEdit->append(QStringLiteral("数据扫频光源：%1。").arg(metadata.sweptSourceName));
+
+    const bool applyKLinearization = metadata.softwareKLinearEnabled;
+    if (applyKLinearization) {
+        if (!ensureKLinearizationMap(metadata.ascanLen, true, metadata.sweptSourceId)) {
+            ui->textEdit->append(QStringLiteral("傅里叶变换失败：已启用软件波数线性化，但没有可用的重采样表。"));
+            return false;
+        }
+    } else {
+        ui->textEdit->append(QStringLiteral("未勾选软件波数线性化，跳过软件重采样。"));
+    }
 
     const QString outputPath = fftBinPathForDataFile(filePath);
     const QString outputJsonPath = fftJsonPathForDataFile(filePath);
     if (!confirmReplaceFourierOutputs(this, outputPath, outputJsonPath)) {
         ui->textEdit->append(QStringLiteral("傅里叶变换已取消：FFT 输出文件已存在。"));
         return false;
+    }
+
+    if (applyKLinearization) {
+        ui->textEdit->append(isVolumeScanModeValue(metadata.scanMode)
+                             ? QStringLiteral("软件波数线性化：3D/Cscan 数据已完成采集/保存，将按 Bscan 分块重采样后再进行 FFT。")
+                             : QStringLiteral("软件波数线性化：将按 Bscan 分块重采样后再进行 FFT。"));
     }
 
     QElapsedTimer fftTimer;
@@ -4780,6 +5659,8 @@ bool mainWidget::processFourierFile(const QString &filePath,
             ui->textEdit->append(QStringLiteral("傅里叶变换失败：%1").arg(errorMessage));
             return false;
         }
+        if (applyKLinearization)
+            applyKLinearizationToSpectra(spectra.data(), metadata.ascanLen, currentLines);
 
         std::vector<float> fftOutput;
         bool transformOk = false;
@@ -4855,12 +5736,18 @@ bool mainWidget::processFourierFile(const QString &filePath,
     source.insert(QStringLiteral("storedBscanCount"), metadata.storedBscanCount);
     source.insert(QStringLiteral("sampleType"), metadata.sampleType);
     source.insert(QStringLiteral("preprocessedSpectrum"), metadata.preprocessedSpectrum);
+    source.insert(QStringLiteral("softwareKLinearEnabled"), metadata.softwareKLinearEnabled);
+    source.insert(QStringLiteral("sweptSourceId"), metadata.sweptSourceId);
+    source.insert(QStringLiteral("sweptSourceName"), metadata.sweptSourceName);
 
     QJsonObject options;
     options.insert(QStringLiteral("applyWindow"), applyWindow);
     options.insert(QStringLiteral("removeBackground"), removeBackground);
     options.insert(QStringLiteral("applyLogScale"), applyLogScale);
     options.insert(QStringLiteral("fftScale"), mainWidget::FFT_SCALE);
+    options.insert(QStringLiteral("kLinearApplied"), applyKLinearization);
+    options.insert(QStringLiteral("kLinearMap"),
+                   applyKLinearization ? QDir::toNativeSeparators(m_kLinearMapPath) : QString());
     options.insert(QStringLiteral("outputSampleType"), QStringLiteral("float32"));
     options.insert(QStringLiteral("outputFile"), QDir::toNativeSeparators(outputPath));
 

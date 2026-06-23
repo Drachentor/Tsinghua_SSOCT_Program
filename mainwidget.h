@@ -125,6 +125,11 @@ public:
     bool m_volumeScanTimingActive;
     int m_volumeScanTimingMode;
     std::vector<double> spectralWindow;
+    std::vector<float> m_kLinearResampleIndex;
+    int m_kLinearMapAscanLen;
+    QString m_kLinearMapPath;
+    QString m_kLinearMapSweptSourceId;
+    bool m_kLinearMapWarningShown;
     float* m_cosphy; 
     float* m_sinphy;
     MKL_Complex8* m_Cdata;
@@ -192,6 +197,8 @@ private slots:
     void on_change_sysParams_clicked();
     void on_AutoDecideAscanLength_clicked();
     void on_AutoDecideBscanLength_clicked();
+    void on_button_manualKLinear_clicked();
+    void on_button_readKLinearFromFile_clicked();
     void on_V_ConvertAngioToImage_clicked();
     void on_V_ConvertImageToPath_clicked();
     void on_button_FFT_clicked();
@@ -225,6 +232,10 @@ private:
     void updateFrameRateFromBscanCycleLength();
     void updateAscanLenDependentUiState();
     void resetSpectralWindow();
+    bool softwareKLinearizationEnabled() const;
+    bool ensureKLinearizationMap(int ascanLen, bool appendMessage, const QString &sweptSourceId = QString());
+    bool applySoftwareKLinearizationIfNeeded(float *spectra, int ascanLen, int lineCount, bool appendMessage);
+    void applyKLinearizationToSpectra(float *spectra, int ascanLen, int lineCount) const;
     void updateControlState();
     void killActiveTimers();
     bool isVolumeScanMode() const;
@@ -280,6 +291,7 @@ private:
     bool selectedAdcUsesPcie3640() const;
     QString selectedDacDeviceName() const;
     QString selectedAdcDeviceName() const;
+    QString selectedSweptSourceName() const;
     NiPcie6353DacConfig niDacConfigFromUi() const;
     void applySelectedDacBackendToThread();
     void applyFastAxisMode(const QString &arg1, bool appendMessage);
@@ -301,6 +313,7 @@ private:
     bool m_logFilesInitialized;
     QString m_selectedDacDeviceId;
     QString m_selectedAdcDeviceId;
+    QString m_selectedSweptSourceId;
 };
 
 #endif // MAINWIDGET_H

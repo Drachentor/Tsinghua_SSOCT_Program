@@ -33,7 +33,7 @@ National Instruments (NI) - **PCIe6353** 多功能 I/O 采集卡\
 模拟输入：32 路单端 / 16 路差分模拟输入 (AI), 16-bit, 1 MS/s (单通道 1.25 MS/s).\
 <small>&emsp;&emsp; 输入范围可独立设置；支持 DIFF、RSE、NRSE 接法。</small>\
 <small>&emsp;&emsp; 适合低速监测、同步控制、触发/时钟路由和振镜驱动测试。</small>\
-数字 I/O: 48 通道，可编程为输入或输出\
+数字 I/O: 48 通道，硬件定时 10MHz, 可编程为输入或输出\
 支持声卡：**是**
 
 现有问题：
@@ -93,6 +93,16 @@ powershell -ExecutionPolicy Bypass -File .\tools\deploy_release.ps1 -Configurati
 4. 可能会输出警告 `Warning: Could not find any translations in D:\QT\5.15.2-Build2\translations (developer build?)`. 这不会有实际影响，因为程序内置了 `qtbase_zh_CN.qm` 翻译。
 
 ## 更新信息
+
+### -- Ver. 260623 --
+
+1. 添加新文件 `DeviceSettings`, 用于在启动之前确定使用的设备。
+    1. 现在还会询问使用的扫频光源。扫频光源的型号对应所有 Ascan 相关设置，以及波数线性化标定坐标文件。
+2. 添加新文件 `KLinearCalibration`, 用于直接用软件实现波数线性化。
+    1. 勾选 “软件波数线性化” 时，程序会使用当前扫频光源和 `AscanLen` 对应目录下的 `klinear_resample_indices.txt` 对采集的 A-line 进行重采样；不勾选时跳过软件重采样。
+    2. 首次操作的时候，您需要手动标定。请将样品臂和参考臂都接反射镜，在正光程差、负光程差、（挡住样品臂的）无干涉本底三个情况下分别进行 `64` 个 Aline 的定点采集；之后，请点击 “手动标定” 按钮进行计算。
+    3. `klinear_resample_indices.txt` 现在按 `klinear_calibration/<扫频光源ID>/ascan_<AscanLen>/` 独立保存，可以通过 “手动标定” 按钮、“从文件读取” 按钮或者 `tools/generate_klinear_map.py` 脚本生成；标定结果会按扫频光源和 `AscanLen` 校验，不匹配时会报错。导入外部 `.txt` 且长度不同时，可选择对 X/Y 等比例放缩。
+    4. “手动标定” 和 “从文件读取” 均改为独立对话框，可在开始计算前分别修改每个输入文件地址。
 
 ### -- Ver. 260618 --
 

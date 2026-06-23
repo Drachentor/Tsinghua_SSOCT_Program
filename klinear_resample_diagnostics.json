@@ -1,0 +1,59 @@
+{
+  "ascan_len": 1600,
+  "trim_left": 5,
+  "trim_right": 5,
+  "poly_degree": 4,
+  "requested_poly_degree": 5,
+  "poly_degree_auto_downgraded": true,
+  "fit_attempts": [
+    {
+      "degree": 5,
+      "min_delta": -0.0919322727476648
+    },
+    {
+      "degree": 4,
+      "min_delta": 0.09995464474127402
+    }
+  ],
+  "fit_min_delta": 0.09995464474127402,
+  "phase_slope_positive": 702.7667137939294,
+  "phase_slope_negative": 708.8405250753406,
+  "phase_slope_linear": 705.803619434635,
+  "resample_min": 5.0,
+  "resample_max": 1594.0,
+  "correction_rms_samples": 98.41341432930973,
+  "correction_max_abs_samples": 147.49530416318453,
+  "poly_coefficients_high_to_low": [
+    9.811157028018719E-11,
+    -4.149928864958444E-07,
+    0.0006390002440718286,
+    0.0929633405762914,
+    -8.371387729555412
+  ],
+  "averaging_assumption": "positive A-lines are repeated at one fixed mirror position; negative A-lines are repeated at one fixed mirror position",
+  "positive_files": [
+    "klinear_calibration\\mirror_pos_fixed.3d"
+  ],
+  "negative_files": [
+    "klinear_calibration\\mirror_neg_fixed.3d"
+  ],
+  "positive_background_files": [
+    "klinear_calibration\\mirror_background.3d"
+  ],
+  "negative_background_files": [
+    "klinear_calibration\\mirror_background.3d"
+  ],
+  "sidecar": "klinear_calibration\\mirror_pos_fixed.json",
+  "positive_input_file_count": 1,
+  "negative_input_file_count": 1,
+  "positive_lines": 64,
+  "negative_lines": 64,
+  "dtype": "uint16",
+  "background_dtype": "uint16",
+  "raw_shift_bits": 4,
+  "high_pass_samples": 0,
+  "keep_dc": false,
+  "output": "klinear_resample_indices.txt",
+  "swept_source_id": "Thorlabs_SL_134051",
+  "swept_source_name": "Thorlabs SL-134051"
+}

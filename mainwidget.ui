@@ -299,7 +299,7 @@
         </size>
        </property>
        <property name="currentIndex">
-        <number>1</number>
+        <number>0</number>
        </property>
        <property name="elideMode">
         <enum>Qt::ElideNone</enum>
@@ -331,7 +331,7 @@
                 <bool>false</bool>
                </property>
                <property name="text">
-                <string>DAC 相关</string>
+                <string>DAC/ADC 相关</string>
                </property>
               </widget>
              </item>
@@ -646,6 +646,55 @@
                </property>
                <property name="text">
                 <string>个 Aline    </string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="CB_softwareKLinear">
+             <property name="text">
+              <string>软件波数线性化</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout_39">
+             <item>
+              <widget class="QPushButton" name="button_manualKLinear">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="minimumSize">
+                <size>
+                 <width>0</width>
+                 <height>20</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>手动标定</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="button_readKLinearFromFile">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="minimumSize">
+                <size>
+                 <width>0</width>
+                 <height>20</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>从文件读取</string>
                </property>
               </widget>
              </item>
@@ -1129,7 +1178,7 @@
        </widget>
        <widget class="QWidget" name="tab_3">
         <attribute name="title">
-         <string>DAC 硬件设置</string>
+         <string>硬件设置</string>
         </attribute>
         <widget class="QWidget" name="verticalLayoutWidget_3">
          <property name="geometry">
@@ -1157,7 +1206,7 @@
                  <bool>false</bool>
                 </property>
                 <property name="text">
-                 <string>NI PCIe6353</string>
+                 <string>NI PCIe6353 DAC</string>
                 </property>
                </widget>
               </item>
@@ -1309,7 +1358,7 @@
                  <bool>false</bool>
                 </property>
                 <property name="text">
-                 <string>FCCTEC PCIe3640</string>
+                 <string>FCCTEC PCIe3640 DAC/ADC</string>
                 </property>
                </widget>
               </item>
@@ -1317,6 +1366,48 @@
                <widget class="Line" name="line_NIParams_3">
                 <property name="orientation">
                  <enum>Qt::Horizontal</enum>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_35">
+              <item>
+               <widget class="QLabel" name="label_34">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>采样率 (MHz)</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLineEdit" name="SampleRate">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>150</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>1250</string>
                 </property>
                </widget>
               </item>
@@ -1509,48 +1600,6 @@
               </property>
               <property name="text">
                <string>1500</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="horizontalLayout_35">
-            <item>
-             <widget class="QLabel" name="label_34">
-              <property name="minimumSize">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>采样率 (MHz)</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="SampleRate">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="minimumSize">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>150</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>1250</string>
               </property>
              </widget>
             </item>

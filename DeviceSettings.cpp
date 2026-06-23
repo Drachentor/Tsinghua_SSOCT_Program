@@ -8,6 +8,7 @@ namespace {
 
 const char kFcctecPcie3640Id[] = "FCCTEC_PCIe3640";
 const char kNiPcie6353Id[] = "NI_PCIe6353";
+const char kThorlabsSl134051Id[] = "Thorlabs_SL_134051";
 
 QString normalizedToken(const QString &text)
 {
@@ -44,6 +45,11 @@ QString defaultAdcDeviceId()
     return QString::fromLatin1(kFcctecPcie3640Id);
 }
 
+QString defaultSweptSourceId()
+{
+    return QString::fromLatin1(kThorlabsSl134051Id);
+}
+
 QVector<DeviceOption> supportedDacDevices()
 {
     QVector<DeviceOption> devices;
@@ -62,6 +68,17 @@ QVector<DeviceOption> supportedAdcDevices()
     return devices;
 }
 
+QVector<SweptSourceOption> supportedSweptSources()
+{
+    QVector<SweptSourceOption> sources;
+    sources.append(SweptSourceOption{QString::fromLatin1(kThorlabsSl134051Id),
+                                     QStringLiteral("Thorlabs SL-134051"),
+                                     400000,
+                                     1600,
+                                     QStringLiteral("0.55")});
+    return sources;
+}
+
 QString normalizeDacDeviceId(const QString &idOrName)
 {
     if (matchesDevice(idOrName,
@@ -78,6 +95,15 @@ QString normalizeAdcDeviceId(const QString &idOrName)
     return defaultAdcDeviceId();
 }
 
+QString normalizeSweptSourceId(const QString &idOrName)
+{
+    for (const SweptSourceOption &source : supportedSweptSources()) {
+        if (matchesDevice(idOrName, source.id, source.displayName))
+            return source.id;
+    }
+    return defaultSweptSourceId();
+}
+
 QString selectedDacDeviceId(QSettings &settings)
 {
     const QString stored = settings.value(QStringLiteral("devices/selectedDacId"),
@@ -90,6 +116,13 @@ QString selectedAdcDeviceId(QSettings &settings)
     const QString stored = settings.value(QStringLiteral("devices/selectedAdcId"),
                                           defaultAdcDeviceId()).toString();
     return normalizeAdcDeviceId(stored);
+}
+
+QString selectedSweptSourceId(QSettings &settings)
+{
+    const QString stored = settings.value(QStringLiteral("devices/selectedSweptSourceId"),
+                                          defaultSweptSourceId()).toString();
+    return normalizeSweptSourceId(stored);
 }
 
 void saveSelectedDevices(QSettings &settings,
@@ -116,6 +149,26 @@ QString adcDeviceDisplayName(const QString &deviceId)
 {
     Q_UNUSED(deviceId);
     return QStringLiteral("FCCTEC PCIe3640");
+}
+
+QString sweptSourceDisplayName(const QString &sourceId)
+{
+    const QString normalized = normalizeSweptSourceId(sourceId);
+    for (const SweptSourceOption &source : supportedSweptSources()) {
+        if (source.id == normalized)
+            return source.displayName;
+    }
+    return QStringLiteral("Thorlabs SL-134051");
+}
+
+SweptSourceOption sweptSourceById(const QString &sourceId)
+{
+    const QString normalized = normalizeSweptSourceId(sourceId);
+    for (const SweptSourceOption &source : supportedSweptSources()) {
+        if (source.id == normalized)
+            return source;
+    }
+    return supportedSweptSources().first();
 }
 
 QString legacyMainWidgetGroup()

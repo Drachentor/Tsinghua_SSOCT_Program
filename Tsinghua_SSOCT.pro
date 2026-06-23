@@ -36,6 +36,7 @@ msvc {
 SOURCES += \
         FlowSpeedCalculation.cpp \
         FlowSpeedMaskDialog.cpp \
+        KLinearCalibration.cpp \
         VesselAudioPlayer.cpp \
         VesselFindingDialog.cpp \
         main.cpp \
@@ -55,6 +56,7 @@ HEADERS += \
         DeviceSettings.h \
         FlowSpeedCalculation.h \
         FlowSpeedMaskDialog.h \
+        KLinearCalibration.h \
         VesselAudioPlayer.h \
         VesselFindingDialog.h \
         include/AlazarApi.h \

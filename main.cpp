@@ -73,8 +73,8 @@ QString defaultSettingsPath()
 }
 
 void addDeviceOptions(QComboBox *combo,
-                      const QVector<DeviceSettings::DeviceOption> &devices,
-                      const QString &currentDeviceId)
+                       const QVector<DeviceSettings::DeviceOption> &devices,
+                       const QString &currentDeviceId)
 {
     int currentIndex = 0;
     for (const DeviceSettings::DeviceOption &device : devices) {
@@ -85,28 +85,66 @@ void addDeviceOptions(QComboBox *combo,
     combo->setCurrentIndex(currentIndex);
 }
 
+void addSweptSourceOptions(QComboBox *combo, const QString &currentSourceId)
+{
+    int currentIndex = 0;
+    for (const DeviceSettings::SweptSourceOption &source : DeviceSettings::supportedSweptSources()) {
+        combo->addItem(source.displayName, source.id);
+        if (source.id == currentSourceId)
+            currentIndex = combo->count() - 1;
+    }
+    combo->setCurrentIndex(currentIndex);
+}
+
+void applySweptSourcePreset(QSettings &settings,
+                            const QString &sourceId,
+                            const QString &dacDeviceId,
+                            const QString &adcDeviceId)
+{
+    const DeviceSettings::SweptSourceOption source = DeviceSettings::sweptSourceById(sourceId);
+    settings.setValue(QStringLiteral("devices/selectedSweptSourceId"), source.id);
+
+    settings.setValue(DeviceSettings::legacyMainWidgetGroup() + QStringLiteral("/AscanFreq"),
+                      source.ascanFreq);
+    settings.setValue(DeviceSettings::legacyMainWidgetGroup() + QStringLiteral("/AscanDutyCycle"),
+                      source.ascanDutyCycle);
+    settings.setValue(DeviceSettings::legacyMainWidgetGroup() + QStringLiteral("/AscanLen"),
+                      source.ascanLen);
+
+    settings.setValue(DeviceSettings::dacSettingsGroup(dacDeviceId) + QStringLiteral("/AscanFreq"),
+                      source.ascanFreq);
+    settings.setValue(DeviceSettings::dacSettingsGroup(dacDeviceId) + QStringLiteral("/AscanDutyCycle"),
+                      source.ascanDutyCycle);
+    settings.setValue(DeviceSettings::adcSettingsGroup(adcDeviceId) + QStringLiteral("/AscanLen"),
+                      source.ascanLen);
+}
+
 bool showStartupDeviceDialog()
 {
     QSettings settings(DeviceSettings::settingsFilePath(), QSettings::IniFormat);
     const QString currentDacDeviceId = DeviceSettings::selectedDacDeviceId(settings);
     const QString currentAdcDeviceId = DeviceSettings::selectedAdcDeviceId(settings);
+    const QString currentSweptSourceId = DeviceSettings::selectedSweptSourceId(settings);
 
     QDialog dialog;
-    dialog.setWindowTitle(QStringLiteral("选择采集设备"));
+    dialog.setWindowTitle(QStringLiteral("选择采集设备和扫频光源"));
     dialog.setModal(true);
 
     auto *layout = new QVBoxLayout(&dialog);
-    auto *message = new QLabel(QStringLiteral("请选择本次运行使用的 DAC 和 ADC 设备。"), &dialog);
+    auto *message = new QLabel(QStringLiteral("请选择本次运行使用的 DAC、ADC 设备和扫频光源。"), &dialog);
     message->setWordWrap(true);
     layout->addWidget(message);
 
     auto *form = new QFormLayout;
     auto *dacCombo = new QComboBox(&dialog);
     auto *adcCombo = new QComboBox(&dialog);
+    auto *sweptSourceCombo = new QComboBox(&dialog);
     addDeviceOptions(dacCombo, DeviceSettings::supportedDacDevices(), currentDacDeviceId);
     addDeviceOptions(adcCombo, DeviceSettings::supportedAdcDevices(), currentAdcDeviceId);
+    addSweptSourceOptions(sweptSourceCombo, currentSweptSourceId);
     form->addRow(QStringLiteral("DAC 设备"), dacCombo);
     form->addRow(QStringLiteral("ADC 设备"), adcCombo);
+    form->addRow(QStringLiteral("扫频光源"), sweptSourceCombo);
     layout->addLayout(form);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
@@ -120,8 +158,12 @@ bool showStartupDeviceDialog()
         return false;
 
     DeviceSettings::saveSelectedDevices(settings,
-                                        dacCombo->currentData().toString(),
-                                        adcCombo->currentData().toString());
+                                         dacCombo->currentData().toString(),
+                                         adcCombo->currentData().toString());
+    applySweptSourcePreset(settings,
+                           sweptSourceCombo->currentData().toString(),
+                           dacCombo->currentData().toString(),
+                           adcCombo->currentData().toString());
     settings.sync();
     return true;
 }

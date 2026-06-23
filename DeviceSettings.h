@@ -14,23 +14,38 @@ struct DeviceOption
     QString displayName;
 };
 
+struct SweptSourceOption
+{
+    QString id;
+    QString displayName;
+    int ascanFreq;
+    int ascanLen;
+    QString ascanDutyCycle;
+};
+
 QString settingsFilePath();
 
 QString defaultDacDeviceId();
 QString defaultAdcDeviceId();
+QString defaultSweptSourceId();
 QVector<DeviceOption> supportedDacDevices();
 QVector<DeviceOption> supportedAdcDevices();
+QVector<SweptSourceOption> supportedSweptSources();
 
 QString normalizeDacDeviceId(const QString &idOrName);
 QString normalizeAdcDeviceId(const QString &idOrName);
+QString normalizeSweptSourceId(const QString &idOrName);
 QString selectedDacDeviceId(QSettings &settings);
 QString selectedAdcDeviceId(QSettings &settings);
+QString selectedSweptSourceId(QSettings &settings);
 void saveSelectedDevices(QSettings &settings,
                          const QString &dacDeviceId,
                          const QString &adcDeviceId);
 
 QString dacDeviceDisplayName(const QString &deviceId);
 QString adcDeviceDisplayName(const QString &deviceId);
+QString sweptSourceDisplayName(const QString &sourceId);
+SweptSourceOption sweptSourceById(const QString &sourceId);
 
 QString legacyMainWidgetGroup();
 QString commonSettingsGroup();

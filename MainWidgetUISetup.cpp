@@ -622,6 +622,10 @@ void mainWidgetUISetup(Ui::mainWidget* ui)
             font: bold 14px;\
             color:rgb(240,240,240);}\
             QCheckBox::indicator{width:16px;height:16px;}");
+    ui->CB_softwareKLinear->setStyleSheet("QCheckBox {background-color:transparent;\
+            font: bold 14px;\
+            color:rgb(240,240,240);}\
+            QCheckBox::indicator{width:16px;height:16px;}");
     ui->CB_enableDAInSymphonic->setStyleSheet("QCheckBox {background-color:transparent;\
             font: bold 14px;\
             color:rgb(240,240,240);}\
@@ -641,6 +645,14 @@ void mainWidgetUISetup(Ui::mainWidget* ui)
                                 font-weight: bold}\
                                 QPushButton:hover{background-color:rgb(35,35,35);}");
     ui->AutoDecideBscanLength->setStyleSheet("QPushButton {background-color:rgb(55,55,55);\
+                                border-radius:4px;\
+                                color:rgb(240,240,240)}\
+                                QPushButton:hover{background-color:rgb(35,35,35);}");
+    ui->button_manualKLinear->setStyleSheet("QPushButton {background-color:rgb(55,55,55);\
+                                border-radius:4px;\
+                                color:rgb(240,240,240)}\
+                                QPushButton:hover{background-color:rgb(35,35,35);}");
+    ui->button_readKLinearFromFile->setStyleSheet("QPushButton {background-color:rgb(55,55,55);\
                                 border-radius:4px;\
                                 color:rgb(240,240,240)}\
                                 QPushButton:hover{background-color:rgb(35,35,35);}");

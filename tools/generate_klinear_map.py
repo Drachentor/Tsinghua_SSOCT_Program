@@ -94,7 +94,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-dc", action="store_true",
                         help="Do not subtract the mean value from each averaged spectrum.")
     parser.add_argument("--output", type=Path,
-                        help="Output resampling index text file. Defaults to klinear_calibration/<swept-source-id>/ascan_<N>/klinear_resample_indices.txt.")
+                        help="Output resampling index text file. Defaults to parameters/calibration/<swept-source-id>/ascan_<N>/klinear_resample_indices.txt.")
     parser.add_argument("--diagnostics", type=Path,
                         help="JSON diagnostics output path. Defaults to klinear_resample_diagnostics.json next to --output.")
     parser.add_argument("--swept-source-id",
@@ -112,7 +112,7 @@ def safe_path_segment(value: str, fallback: str) -> str:
 
 def default_output_path(swept_source_id: str, ascan_len: int) -> Path:
     source_segment = safe_path_segment(swept_source_id, "unknown_swept_source")
-    return Path("klinear_calibration") / source_segment / f"ascan_{ascan_len}" / KLINEAR_OUTPUT_NAME
+    return Path("parameters") / "calibration" / source_segment / f"ascan_{ascan_len}" / KLINEAR_OUTPUT_NAME
 
 
 def dtype_for_numpy(name: str) -> np.dtype:

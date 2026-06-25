@@ -1,4 +1,4 @@
-% 读取当前工程中的 scanX.txt / scanY.txt，并显示路径与频谱。
+% 读取当前工程 parameters/scan_path 中的 scanX.txt / scanY.txt，并显示路径与频谱。
 
 voltage_0V = 32768;
 scriptPath = mfilename("fullpath");
@@ -8,9 +8,9 @@ else
     projectDir = fileparts(fileparts(scriptPath));
 end
 
-scanXPath = fullfile(projectDir, "scanX.txt");
-scanYPath = fullfile(projectDir, "scanY.txt");
-settingsPath = fullfile(projectDir, "settings.ini");
+scanXPath = fullfile(projectDir, "parameters", "scan_path", "scanX.txt");
+scanYPath = fullfile(projectDir, "parameters", "scan_path", "scanY.txt");
+settingsPath = fullfile(projectDir, "parameters", "settings.ini");
 
 ScanX = load(scanXPath);
 ScanY = load(scanYPath);

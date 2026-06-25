@@ -92,7 +92,7 @@ int main()
     constexpr int lineCount = bscanLen * cscanLen;
     constexpr int repeats = 5;
     const std::string mapPath =
-        "klinear_calibration/Thorlabs_SL_134051/ascan_1600/klinear_resample_indices.txt";
+        "parameters/calibration/Thorlabs_SL_134051/ascan_1600/klinear_resample_indices.txt";
 
     try {
         const std::vector<float> resampleIndex = readResampleIndices(mapPath, ascanLen);

@@ -94,6 +94,14 @@ powershell -ExecutionPolicy Bypass -File .\tools\deploy_release.ps1 -Configurati
 
 ## 更新信息
 
+### -- Ver. 260625 --
+
+1. `mainwidget` / `KLinearCalibration`: 在手动标定流程中新增“进行波数线性化映射”和“计算色散修正”两个选项；可只计算色散修正，此时程序按输入数据已经波数线性化处理。
+2. `mainwidget`: 新增 `CB_calibratedDispersion` 开关；只有勾选“使用标定色散修正”时，实时显示和保存后 FFT 才加载当前扫频光源、当前 `AscanLen` 对应的 `dispersion_phase.txt`。
+3. `KLinearCalibration`: 色散标定结果按 `parameters/calibration/<扫频光源ID>/ascan_<AscanLen>/dispersion_phase.txt` 保存，并用 `dispersion_diagnostics.json` 校验扫频光源和 A-line 长度。
+4. “从文件读取”现在可分别选择 k-linear 重采样表、k-linear 诊断文件、色散相位表、色散诊断文件；每个文件都可留空，因此可以只导入 k-linear、只导入色散，或二者一起导入。
+5. 参数文件目录调整：程序设置保存到 `parameters/settings.ini`，标定文件保存到 `parameters/calibration`，扫描路径文本保存到 `parameters/scan_path`，扫描音频保存到 `parameters/scan_path_audio`。
+
 ### -- Ver. 260623 --
 
 1. 添加新文件 `DeviceSettings`, 用于在启动之前确定使用的设备。
@@ -101,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\deploy_release.ps1 -Configurati
 2. 添加新文件 `KLinearCalibration`, 用于直接用软件实现波数线性化。
     1. 勾选 “软件波数线性化” 时，程序会使用当前扫频光源和 `AscanLen` 对应目录下的 `klinear_resample_indices.txt` 对采集的 A-line 进行重采样；不勾选时跳过软件重采样。
     2. 首次操作的时候，您需要手动标定。请将样品臂和参考臂都接反射镜，在正光程差、负光程差、（挡住样品臂的）无干涉本底三个情况下分别进行 `64` 个 Aline 的定点采集；之后，请点击 “手动标定” 按钮进行计算。
-    3. `klinear_resample_indices.txt` 现在按 `klinear_calibration/<扫频光源ID>/ascan_<AscanLen>/` 独立保存，可以通过 “手动标定” 按钮、“从文件读取” 按钮或者 `tools/generate_klinear_map.py` 脚本生成；标定结果会按扫频光源和 `AscanLen` 校验，不匹配时会报错。导入外部 `.txt` 且长度不同时，可选择对 X/Y 等比例放缩。
+    3. `klinear_resample_indices.txt` 现在按 `parameters/calibration/<扫频光源ID>/ascan_<AscanLen>/` 独立保存，可以通过 “手动标定” 按钮、“从文件读取” 按钮或者 `tools/generate_klinear_map.py` 脚本生成；标定结果会按扫频光源和 `AscanLen` 校验，不匹配时会报错。导入外部 `.txt` 且长度不同时，可选择对 X/Y 等比例放缩。
     4. “手动标定” 和 “从文件读取” 均改为独立对话框，可在开始计算前分别修改每个输入文件地址。
 
 ### -- Ver. 260618 --
@@ -371,7 +379,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\deploy_release.ps1 -Configurati
 ### -- Ver. 260519 --
 
 1. 略微修改了主对话框和血管图对话框的大小。
-2. 增加了配置文件 `settings.ini`。 程序启动时会自动读取配置文件中的参数（以及存储路径），在修改参数时也会被记住。
+2. 增加了配置文件 `settings.ini`（当前保存位置为 `parameters/settings.ini`）。 程序启动时会自动读取配置文件中的参数（以及存储路径），在修改参数时也会被记住。
 3. 对从血管图生成扫描路径的功能，进行了如下优化：
     1. 修改了在已经存在扫描路径的情况下更新二值掩膜参数时系统的运行逻辑：现在，更新二值掩膜参数之后，系统不会自动再生成一次扫描路径，而是会重新开启选点模式（防止在骨架出问题时仍然试图生成扫描路径、浪费时间）。当然，如果您不需要改变种子点，可以直接点击确定。
     2. 在构建完扫描路径之后，会自动对扫描路径进行一次平滑操作。

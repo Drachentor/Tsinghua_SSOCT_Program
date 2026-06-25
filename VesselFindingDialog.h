@@ -72,7 +72,9 @@ private:
     void updateStats();
     void appendLog(const QString &message);
     bool exportPathFile();
-    bool exportWavPathFile(const QVector<QPoint> &path, const QString &dirPath);
+    bool exportWavPathFile(const QVector<QPoint> &path,
+                           const QString &scanPathDir,
+                           const QString &audioPathDir);
     QVector<QPoint> orderedMainVesselPath() const;
     void loadSettings();
     void saveSettings(bool includeEndpointWeights = true) const;

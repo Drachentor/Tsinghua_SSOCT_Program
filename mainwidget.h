@@ -130,6 +130,11 @@ public:
     QString m_kLinearMapPath;
     QString m_kLinearMapSweptSourceId;
     bool m_kLinearMapWarningShown;
+    std::vector<float> m_calibratedDispersionPhase;
+    int m_calibratedDispersionAscanLen;
+    QString m_calibratedDispersionPath;
+    QString m_calibratedDispersionSweptSourceId;
+    bool m_calibratedDispersionWarningShown;
     float* m_cosphy; 
     float* m_sinphy;
     MKL_Complex8* m_Cdata;
@@ -148,7 +153,7 @@ public:
     void OCTplots();
     void fftBscan(float*); // 用于计算Bscan的fft等操作
     float* fftBscanprocess(float*); // 用于Bscan的fft后处理操作
-    void calc_dispersion_compensation(); // 根据输入的色散补偿参数计算相位修正量 phy 及其三角函数值，存入 m_cosphy 和 m_sinphy 数组
+    bool calc_dispersion_compensation(); // 根据输入的色散补偿参数计算相位修正量 phy 及其三角函数值，存入 m_cosphy 和 m_sinphy 数组
     void apply_dispersion_compensation(MKL_Complex8* data_compensated, float* data_input, int a, int b);   // 对输入的频域数据应用色散补偿，输出补偿后的数据
     float* calc_FFT_Bscan(int AscanLength, int BscanLength, int CscanLength, float* b_input, bool ignore_dispersion); // 计算 Bscan 的 FFT 结果，输出相应的实空间数据指针
     cv::Mat normalizeBscan(float* num, int tmp1, int tmp2, int offset); // 用于将 Bscan 数据归一化到指定范围内
@@ -236,6 +241,8 @@ private:
     bool ensureKLinearizationMap(int ascanLen, bool appendMessage, const QString &sweptSourceId = QString());
     bool applySoftwareKLinearizationIfNeeded(float *spectra, int ascanLen, int lineCount, bool appendMessage);
     void applyKLinearizationToSpectra(float *spectra, int ascanLen, int lineCount) const;
+    bool calibratedDispersionEnabled() const;
+    bool ensureCalibratedDispersionPhase(int ascanLen, bool appendMessage, const QString &sweptSourceId = QString());
     void updateControlState();
     void killActiveTimers();
     bool isVolumeScanMode() const;

@@ -14,6 +14,8 @@ struct GenerateOptions
     QString backgroundPath;
     QString outputPath;
     QString diagnosticsPath;
+    QString dispersionPath;
+    QString dispersionDiagnosticsPath;
     QString sweptSourceId;
     QString sweptSourceName;
     int expectedAscanLen = 0;
@@ -24,6 +26,9 @@ struct GenerateOptions
     int rawShiftBits = 4;
     int maxLines = 0;
     bool keepDc = false;
+    bool generateKLinearMap = true;
+    bool generateDispersionCorrection = false;
+    bool dispersionInputAlreadyKLinear = false;
 };
 
 struct ImportOptions
@@ -38,16 +43,31 @@ struct ImportOptions
     bool rescaleToExpectedAscanLen = false;
 };
 
+struct ImportDispersionOptions
+{
+    QString inputPath;
+    QString inputDiagnosticsPath;
+    QString outputPath;
+    QString diagnosticsPath;
+    QString sweptSourceId;
+    QString sweptSourceName;
+    int expectedAscanLen = 0;
+};
+
 struct Result
 {
     bool ok = false;
     QString errorMessage;
     QString outputPath;
     QString diagnosticsPath;
+    QString dispersionPath;
+    QString dispersionDiagnosticsPath;
     int ascanLen = 0;
     int sourceAscanLen = 0;
     bool ascanLenMismatch = false;
     bool rescaled = false;
+    bool kLinearMapGenerated = false;
+    bool dispersionGenerated = false;
     int lineCountPositive = 0;
     int lineCountNegative = 0;
     int polyDegree = 0;
@@ -55,12 +75,18 @@ struct Result
     bool polyDegreeAutoDowngraded = false;
     double correctionRmsSamples = 0.0;
     double correctionMaxAbsSamples = 0.0;
+    double dispersionRmsRadians = 0.0;
+    double dispersionMaxAbsRadians = 0.0;
+    int positivePeakIndex = 0;
+    int negativePeakIndex = 0;
     std::vector<float> resampleIndices;
+    std::vector<float> dispersionPhase;
     QJsonObject diagnostics;
 };
 
 Result generateFromMirrorFiles(const GenerateOptions &options);
 Result importFromIndexFile(const ImportOptions &options);
+Result importFromDispersionFile(const ImportDispersionOptions &options);
 
 } // namespace KLinearCalibration
 

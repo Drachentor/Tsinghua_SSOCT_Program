@@ -626,6 +626,7 @@ void mainWidgetUISetup(Ui::mainWidget* ui)
             font: bold 14px;\
             color:rgb(240,240,240);}\
             QCheckBox::indicator{width:16px;height:16px;}");
+    ui->CB_calibratedDispersion->setStyleSheet(ui->CB_softwareKLinear->styleSheet());
     ui->CB_enableDAInSymphonic->setStyleSheet("QCheckBox {background-color:transparent;\
             font: bold 14px;\
             color:rgb(240,240,240);}\

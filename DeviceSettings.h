@@ -24,6 +24,10 @@ struct SweptSourceOption
 };
 
 QString settingsFilePath();
+QString parametersDirectoryPath();
+QString calibrationDirectoryPath();
+QString scanPathDirectoryPath();
+QString scanPathAudioDirectoryPath();
 
 QString defaultDacDeviceId();
 QString defaultAdcDeviceId();

@@ -2,9 +2,11 @@
 #include "VesselFindingDialogUISetup.h"
 #include "ui_VesselFindingDialog.h"
 #include "vessel_colorMap.h"
+#include "DeviceSettings.h"
 
 #include <QApplication>
 #include <QByteArray>
+#include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -36,8 +38,7 @@ namespace {
 
 QString settingsFilePath()
 {
-    return QFileInfo(QString::fromLocal8Bit(__FILE__)).absolutePath()
-        + QStringLiteral("/settings.ini");
+    return DeviceSettings::settingsFilePath();
 }
 
 QString defaultDialogPath()
@@ -3146,14 +3147,15 @@ bool VesselFindingDialog::exportPathFile()
         return false;
     }
 
-    const QString dirPath = QFileInfo(QString::fromLocal8Bit(__FILE__)).absolutePath();
+    const QString scanPathDir = DeviceSettings::scanPathDirectoryPath();
+    const QString audioPathDir = DeviceSettings::scanPathAudioDirectoryPath();
 
     if (ui->CB_generateWAV->isChecked()) {
-        return exportWavPathFile(path, dirPath);
+        return exportWavPathFile(path, scanPathDir, audioPathDir);
     }
 
-    QFile fileX(dirPath + QStringLiteral("/scanX.txt"));
-    QFile fileY(dirPath + QStringLiteral("/scanY.txt"));
+    QFile fileX(QDir(scanPathDir).filePath(QStringLiteral("scanX.txt")));
+    QFile fileY(QDir(scanPathDir).filePath(QStringLiteral("scanY.txt")));
     if (!fileX.open(QFile::WriteOnly | QFile::Text) || !fileY.open(QFile::WriteOnly | QFile::Text)) {
         styledMessageBox(this,
                          QMessageBox::Warning,
@@ -3176,7 +3178,7 @@ bool VesselFindingDialog::exportPathFile()
     }
 
     appendLog(QStringLiteral("扫描路径已保存：%1/scanX.txt, %1/scanY.txt；点数 %2，电压 %3；返回模式：%4。")
-              .arg(dirPath)
+              .arg(scanPathDir)
               .arg(path.size())
               .arg(m_voltage, 0, 'f', 2)
               .arg(ui->CB_noReturn->isChecked()
@@ -3185,16 +3187,18 @@ bool VesselFindingDialog::exportPathFile()
     return true;
 }
 
-bool VesselFindingDialog::exportWavPathFile(const QVector<QPoint> &path, const QString &dirPath)
+bool VesselFindingDialog::exportWavPathFile(const QVector<QPoint> &path,
+                                            const QString &scanPathDir,
+                                            const QString &audioPathDir)
 {
     if (path.isEmpty()) {
         appendLog(QStringLiteral("WAV 生成失败：路径为空。"));
         return false;
     }
 
-    const QString wavPath = dirPath + QStringLiteral("/vessel_scan_path.wav");
-    const QString scanXPath = dirPath + QStringLiteral("/scanX.txt");
-    const QString scanYPath = dirPath + QStringLiteral("/scanY.txt");
+    const QString wavPath = QDir(audioPathDir).filePath(QStringLiteral("vessel_scan_path.wav"));
+    const QString scanXPath = QDir(scanPathDir).filePath(QStringLiteral("scanX.txt"));
+    const QString scanYPath = QDir(scanPathDir).filePath(QStringLiteral("scanY.txt"));
     QFile wavFile(wavPath);
     if (!wavFile.open(QFile::WriteOnly)) {
         styledMessageBox(this,
@@ -3338,7 +3342,7 @@ bool VesselFindingDialog::exportWavPathFile(const QVector<QPoint> &path, const Q
                    ? QStringLiteral("终点线性返回起点")
                    : QStringLiteral("0V 到起点，终点回 0V")));
     appendLog(QStringLiteral("扫描路径已按 DA 周期保存：%1/scanX.txt, %1/scanY.txt；点数 %2。")
-              .arg(dirPath)
+              .arg(scanPathDir)
               .arg(daPoints.size()));
     return true;
 }

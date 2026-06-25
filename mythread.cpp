@@ -1,6 +1,8 @@
 ﻿#include "mythread.h"
 #include "mainwidget.h"
 #include "AppVersion.h"
+#include "DeviceSettings.h"
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QTextStream>
@@ -206,11 +208,16 @@ QString sourceDirectoryPath()
 
 bool vesselPathNoReturnToZero()
 {
-    QSettings settings(sourceDirectoryPath() + QStringLiteral("/settings.ini"), QSettings::IniFormat);
+    QSettings settings(DeviceSettings::settingsFilePath(), QSettings::IniFormat);
     settings.beginGroup(QStringLiteral("VesselFindingDialog"));
     const bool noReturn = settings.value(QStringLiteral("noReturn"), false).toBool();
     settings.endGroup();
     return noReturn;
+}
+
+QString scanPathFilePath(const QString &fileName)
+{
+    return QDir(DeviceSettings::scanPathDirectoryPath()).filePath(fileName);
 }
 
 int gcdInt(int a, int b)
@@ -505,9 +512,8 @@ bool mythread::ConfigureSymphonicDAFromBoundPath(int ascanFreq)
     QVector<unsigned short> vesselPathX;
     QVector<unsigned short> vesselPathY;
     QString errorMessage;
-    const QString dirPath = sourceDirectoryPath();
-    if (!readDaPathFile(dirPath + QStringLiteral("/scanX.txt"), vesselPathX, errorMessage)
-        || !readDaPathFile(dirPath + QStringLiteral("/scanY.txt"), vesselPathY, errorMessage))
+    if (!readDaPathFile(scanPathFilePath(QStringLiteral("scanX.txt")), vesselPathX, errorMessage)
+        || !readDaPathFile(scanPathFilePath(QStringLiteral("scanY.txt")), vesselPathY, errorMessage))
     {
         return FailDAConfig(errorMessage);
     }
@@ -1114,9 +1120,8 @@ bool mythread::GenData(int scanMode)
             QVector<unsigned short> vesselPathX;
             QVector<unsigned short> vesselPathY;
             QString errorMessage;
-            const QString dirPath = sourceDirectoryPath();
-            if (!readDaPathFile(dirPath + QStringLiteral("/scanX.txt"), vesselPathX, errorMessage)
-                || !readDaPathFile(dirPath + QStringLiteral("/scanY.txt"), vesselPathY, errorMessage))
+            if (!readDaPathFile(scanPathFilePath(QStringLiteral("scanX.txt")), vesselPathX, errorMessage)
+                || !readDaPathFile(scanPathFilePath(QStringLiteral("scanY.txt")), vesselPathY, errorMessage))
             {
                 return FailDAConfig(errorMessage);
             }
@@ -1246,12 +1251,12 @@ bool mythread::GenData(int scanMode)
 
     if (scanMode != 42)
     {
-        std::ofstream file1("scanX.txt");
+        std::ofstream file1(scanPathFilePath(QStringLiteral("scanX.txt")).toStdWString());
         for (int i = 0; i < len_XScanData; ++i)
             file1 << pDataX[i] << std::endl;
         file1.close();
 
-        std::ofstream file2("scanY.txt");
+        std::ofstream file2(scanPathFilePath(QStringLiteral("scanY.txt")).toStdWString());
         for (int i = 0; i < len_YScanData; ++i)
             file2 << pDataY[i] << std::endl;
         file2.close();

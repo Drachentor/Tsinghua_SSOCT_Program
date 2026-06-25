@@ -727,6 +727,261 @@ void insertIndexDiagnostics(QJsonObject *diagnostics,
     diagnostics->insert(QStringLiteral("output"), QDir::toNativeSeparators(outputPath));
 }
 
+bool applyResampleIndices(const std::vector<double> &source,
+                          const std::vector<float> &indices,
+                          std::vector<double> *resampled,
+                          QString *errorMessage)
+{
+    if (resampled == nullptr || source.empty() || indices.empty())
+        return false;
+
+    const int ascanLen = static_cast<int>(source.size());
+    resampled->assign(indices.size(), 0.0);
+    for (size_t i = 0; i < indices.size(); ++i) {
+        const double sourceIndex = indices[i];
+        if (!std::isfinite(sourceIndex) || sourceIndex < 0.0 || sourceIndex > static_cast<double>(ascanLen - 1)) {
+            if (errorMessage)
+                *errorMessage = QStringLiteral("重采样索引 %1 超出范围 [0, %2]。")
+                    .arg(sourceIndex)
+                    .arg(ascanLen - 1);
+            return false;
+        }
+
+        const int left = std::max(0, std::min(ascanLen - 1, static_cast<int>(std::floor(sourceIndex))));
+        const int right = std::min(ascanLen - 1, left + 1);
+        const double fraction = sourceIndex - static_cast<double>(left);
+        (*resampled)[i] = source[static_cast<size_t>(left)] * (1.0 - fraction)
+            + source[static_cast<size_t>(right)] * fraction;
+    }
+    return true;
+}
+
+bool fftMagnitude(const std::vector<double> &realSignal,
+                  std::vector<double> *magnitude,
+                  QString *errorMessage)
+{
+    if (magnitude == nullptr || realSignal.empty())
+        return false;
+
+    const int n = static_cast<int>(realSignal.size());
+    std::vector<MKL_Complex16> input(static_cast<size_t>(n));
+    std::vector<MKL_Complex16> spectrum(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        input[static_cast<size_t>(i)].real = realSignal[static_cast<size_t>(i)];
+        input[static_cast<size_t>(i)].imag = 0.0;
+    }
+
+    DFTI_DESCRIPTOR_HANDLE fftHandle = nullptr;
+    MKL_LONG status = DftiCreateDescriptor(&fftHandle, DFTI_DOUBLE, DFTI_COMPLEX, 1, n);
+    if (status == DFTI_NO_ERROR)
+        status = DftiSetValue(fftHandle, DFTI_PLACEMENT, DFTI_NOT_INPLACE);
+    if (status == DFTI_NO_ERROR)
+        status = DftiCommitDescriptor(fftHandle);
+    if (status == DFTI_NO_ERROR)
+        status = DftiComputeForward(fftHandle, input.data(), spectrum.data());
+    if (fftHandle != nullptr)
+        DftiFreeDescriptor(&fftHandle);
+
+    if (status != DFTI_NO_ERROR) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("镜面峰位置 FFT 失败：%1。")
+                .arg(QString::fromLatin1(DftiErrorMessage(status)));
+        return false;
+    }
+
+    magnitude->assign(static_cast<size_t>(n), 0.0);
+    for (int i = 0; i < n; ++i) {
+        const MKL_Complex16 value = spectrum[static_cast<size_t>(i)];
+        (*magnitude)[static_cast<size_t>(i)] = std::sqrt(value.real * value.real + value.imag * value.imag);
+    }
+    return true;
+}
+
+int dominantMirrorPeakIndex(const std::vector<double> &spectrum,
+                            QString *errorMessage)
+{
+    std::vector<double> magnitude;
+    if (!fftMagnitude(spectrum, &magnitude, errorMessage))
+        return 0;
+
+    const int n = static_cast<int>(magnitude.size());
+    const int searchStart = std::max(2, n / 128);
+    const int searchEnd = std::max(searchStart + 1, n / 2);
+    int bestIndex = searchStart;
+    double bestValue = -std::numeric_limits<double>::infinity();
+    for (int i = searchStart; i < searchEnd; ++i) {
+        const double value = magnitude[static_cast<size_t>(i)];
+        if (value > bestValue) {
+            bestValue = value;
+            bestIndex = i;
+        }
+    }
+
+    if (!std::isfinite(bestValue) || bestValue <= 0.0) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("无法在镜面 FFT 中找到有效主峰。");
+        return 0;
+    }
+    return bestIndex;
+}
+
+bool subtractLinearTrend(const std::vector<double> &phase,
+                         int trimLeft,
+                         int trimRight,
+                         std::vector<double> *detrended,
+                         QString *errorMessage)
+{
+    if (detrended == nullptr || phase.size() < 3)
+        return false;
+
+    const int n = static_cast<int>(phase.size());
+    const int start = std::max(0, std::min(trimLeft, n - 2));
+    const int end = std::max(start + 2, n - std::max(0, trimRight));
+    if (end > n) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("色散相位去线性趋势失败：trim 参数无效。");
+        return false;
+    }
+
+    double sx = 0.0;
+    double sy = 0.0;
+    double sxx = 0.0;
+    double sxy = 0.0;
+    const int count = end - start;
+    for (int i = start; i < end; ++i) {
+        const double x = static_cast<double>(i);
+        const double y = phase[static_cast<size_t>(i)];
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        sxy += x * y;
+    }
+
+    const double denominator = static_cast<double>(count) * sxx - sx * sx;
+    if (std::fabs(denominator) <= 1.0e-12) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("色散相位去线性趋势失败：线性拟合矩阵奇异。");
+        return false;
+    }
+
+    const double slope = (static_cast<double>(count) * sxy - sx * sy) / denominator;
+    const double intercept = (sy - slope * sx) / static_cast<double>(count);
+    detrended->assign(static_cast<size_t>(n), 0.0);
+    for (int i = 0; i < n; ++i)
+        (*detrended)[static_cast<size_t>(i)] =
+            phase[static_cast<size_t>(i)] - (intercept + slope * static_cast<double>(i));
+    return true;
+}
+
+std::vector<double> smoothDispersionPhase(const std::vector<double> &phase, int degree)
+{
+    const int n = static_cast<int>(phase.size());
+    const int selectedDegree = std::max(1, std::min(degree, n - 1));
+    std::vector<double> indices(static_cast<size_t>(n), 0.0);
+    for (int i = 0; i < n; ++i)
+        indices[static_cast<size_t>(i)] = static_cast<double>(i);
+
+    std::vector<double> fitted;
+    std::vector<double> coefficients;
+    if (fitPolynomialScaled(indices, phase, selectedDegree, &fitted, &coefficients))
+        return fitted;
+    return phase;
+}
+
+void insertDispersionDiagnostics(QJsonObject *diagnostics,
+                                 const std::vector<float> &phase,
+                                 const QString &outputPath)
+{
+    if (diagnostics == nullptr || phase.empty())
+        return;
+
+    double rms = 0.0;
+    double maxAbs = 0.0;
+    double minValue = std::numeric_limits<double>::infinity();
+    double maxValue = -std::numeric_limits<double>::infinity();
+    for (float value : phase) {
+        const double v = static_cast<double>(value);
+        rms += v * v;
+        maxAbs = std::max(maxAbs, std::fabs(v));
+        minValue = std::min(minValue, v);
+        maxValue = std::max(maxValue, v);
+    }
+    rms = std::sqrt(rms / static_cast<double>(phase.size()));
+
+    diagnostics->insert(QStringLiteral("ascan_len"), static_cast<int>(phase.size()));
+    diagnostics->insert(QStringLiteral("dispersion_phase_min_rad"), minValue);
+    diagnostics->insert(QStringLiteral("dispersion_phase_max_rad"), maxValue);
+    diagnostics->insert(QStringLiteral("dispersion_phase_rms_rad"), rms);
+    diagnostics->insert(QStringLiteral("dispersion_phase_max_abs_rad"), maxAbs);
+    diagnostics->insert(QStringLiteral("output"), QDir::toNativeSeparators(outputPath));
+}
+
+QJsonObject buildDispersionDiagnostics(const KLinearCalibration::GenerateOptions &options,
+                                       const AveragedMeasurement &positive,
+                                       const AveragedMeasurement &negative,
+                                       const AveragedMeasurement *background,
+                                       int positivePeakIndex,
+                                       int negativePeakIndex,
+                                       double targetPeakIndex,
+                                       bool usedGeneratedKLinearMap,
+                                       const std::vector<float> &dispersionPhase)
+{
+    QJsonObject diagnostics;
+    diagnostics.insert(QStringLiteral("swept_source_id"), options.sweptSourceId);
+    diagnostics.insert(QStringLiteral("swept_source_name"), options.sweptSourceName);
+    diagnostics.insert(QStringLiteral("positive_peak_index"), positivePeakIndex);
+    diagnostics.insert(QStringLiteral("negative_peak_index"), negativePeakIndex);
+    diagnostics.insert(QStringLiteral("target_peak_index"), targetPeakIndex);
+    diagnostics.insert(QStringLiteral("used_generated_klinear_map"), usedGeneratedKLinearMap);
+    diagnostics.insert(QStringLiteral("input_already_klinear"), options.dispersionInputAlreadyKLinear);
+    diagnostics.insert(QStringLiteral("positive_files"), stringListToJson(QStringList() << options.positivePath));
+    diagnostics.insert(QStringLiteral("negative_files"), stringListToJson(QStringList() << options.negativePath));
+    diagnostics.insert(QStringLiteral("background_files"),
+                       stringListToJson(background == nullptr ? QStringList() : (QStringList() << options.backgroundPath)));
+    diagnostics.insert(QStringLiteral("positive_lines"), positive.lineCount);
+    diagnostics.insert(QStringLiteral("negative_lines"), negative.lineCount);
+    diagnostics.insert(QStringLiteral("dtype"), positive.dtypeName);
+    diagnostics.insert(QStringLiteral("background_dtype"), background == nullptr ? QString() : background->dtypeName);
+    diagnostics.insert(QStringLiteral("raw_shift_bits"), options.rawShiftBits);
+    diagnostics.insert(QStringLiteral("high_pass_samples"), options.highPassSamples);
+    diagnostics.insert(QStringLiteral("keep_dc"), options.keepDc);
+    diagnostics.insert(QStringLiteral("generated_by"), QStringLiteral("KLinearCalibration.cpp"));
+    insertDispersionDiagnostics(&diagnostics, dispersionPhase, options.dispersionPath);
+    return diagnostics;
+}
+
+bool writeDispersionPhase(const QString &path,
+                          const std::vector<float> &phase,
+                          const QJsonObject &diagnostics,
+                          QString *errorMessage)
+{
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("无法写入 %1：%2。").arg(path, file.errorString());
+        return false;
+    }
+
+    QTextStream stream(&file);
+    stream.setCodec("UTF-8");
+    stream << "# calibrated dispersion phase generated by KLinearCalibration.cpp\n";
+    stream << "# ascan_len: " << diagnostics.value(QStringLiteral("ascan_len")).toInt() << "\n";
+    stream << "# unit: radians\n";
+    stream << "# phase_rms_rad: "
+           << QString::number(diagnostics.value(QStringLiteral("dispersion_phase_rms_rad")).toDouble(), 'g', 9)
+           << "\n";
+    for (float value : phase)
+        stream << QString::number(static_cast<double>(value), 'f', 9) << "\n";
+
+    if (!file.commit()) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("保存 %1 失败：%2。").arg(path, file.errorString());
+        return false;
+    }
+    return true;
+}
+
 QJsonObject buildGenerateDiagnostics(const KLinearCalibration::GenerateOptions &options,
                                      const AveragedMeasurement &positive,
                                      const AveragedMeasurement &negative,
@@ -932,6 +1187,60 @@ bool readRawResampleIndexFile(const QString &filePath,
     return true;
 }
 
+bool readRawDispersionPhaseFile(const QString &filePath,
+                                std::vector<float> *phase,
+                                QString *errorMessage)
+{
+    if (phase == nullptr)
+        return false;
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("无法打开 %1：%2。").arg(filePath, file.errorString());
+        return false;
+    }
+
+    QTextStream stream(&file);
+    stream.setCodec("UTF-8");
+    phase->clear();
+    int lineNumber = 0;
+    while (!stream.atEnd()) {
+        ++lineNumber;
+        QString line = stream.readLine().trimmed();
+        const int commentIndex = line.indexOf(QLatin1Char('#'));
+        if (commentIndex >= 0)
+            line = line.left(commentIndex).trimmed();
+        if (line.isEmpty())
+            continue;
+
+        line.replace(QLatin1Char(','), QLatin1Char(' '));
+        line.replace(QLatin1Char(';'), QLatin1Char(' '));
+        line.replace(QLatin1Char('\t'), QLatin1Char(' '));
+        const QStringList tokens = line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+
+        float value = 0.0f;
+        if (!parseMapValue(tokens, static_cast<int>(phase->size()), &value))
+            continue;
+        if (!std::isfinite(value)) {
+            if (errorMessage)
+                *errorMessage = QStringLiteral("%1 第 %2 行的色散相位无效。")
+                    .arg(filePath)
+                    .arg(lineNumber);
+            phase->clear();
+            return false;
+        }
+        phase->push_back(value);
+    }
+
+    if (phase->empty()) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("%1 中没有有效的色散相位。").arg(filePath);
+        return false;
+    }
+    return true;
+}
+
 bool validateResampleIndexRange(const QString &filePath,
                                 const std::vector<float> &indices,
                                 int ascanLen,
@@ -1007,15 +1316,19 @@ namespace KLinearCalibration {
 Result generateFromMirrorFiles(const GenerateOptions &options)
 {
     if (options.expectedAscanLen <= 0)
-        return failure(QStringLiteral("当前 AscanLen 无效，无法生成波数线性化表。"));
+        return failure(QStringLiteral("当前 AscanLen 无效，无法进行标定。"));
     if (options.positivePath.isEmpty() || options.negativePath.isEmpty())
         return failure(QStringLiteral("请同时选择正光程差和负光程差 .3d 文件。"));
     if (options.backgroundPath.isEmpty())
         return failure(QStringLiteral("请先选择本底 .3d 文件。"));
-    if (options.outputPath.isEmpty())
-        return failure(QStringLiteral("输出路径为空。"));
+    if (!options.generateKLinearMap && !options.generateDispersionCorrection)
+        return failure(QStringLiteral("请至少选择“进行波数线性化映射”或“计算色散修正”之一。"));
+    if (options.generateKLinearMap && options.outputPath.isEmpty())
+        return failure(QStringLiteral("波数线性化输出路径为空。"));
+    if (options.generateDispersionCorrection && options.dispersionPath.isEmpty())
+        return failure(QStringLiteral("色散修正输出路径为空。"));
     if (options.sweptSourceId.trimmed().isEmpty())
-        return failure(QStringLiteral("当前扫频光源为空，无法生成可绑定的波数线性化标定文件。"));
+        return failure(QStringLiteral("当前扫频光源为空，无法生成可绑定的标定文件。"));
     if (options.trimLeft < 0 || options.trimRight < 0
         || options.trimLeft + options.trimRight >= options.expectedAscanLen - 2) {
         return failure(QStringLiteral("trim 参数无效，剩余相位点数太少。"));
@@ -1086,72 +1399,185 @@ Result generateFromMirrorFiles(const GenerateOptions &options)
     if (!unwrappedPhase(negativeSpectrum, &phaseNegative, &errorMessage))
         return failure(errorMessage);
 
-    std::vector<double> phaseLinear(static_cast<size_t>(positive.ascanLen), 0.0);
-    for (int i = 0; i < positive.ascanLen; ++i) {
-        phaseLinear[static_cast<size_t>(i)] =
-            0.5 * (phasePositive[static_cast<size_t>(i)] + phaseNegative[static_cast<size_t>(i)]);
+    std::vector<float> resampleIndices;
+    QJsonObject diagnostics;
+    PhaseFit fit;
+    if (options.generateKLinearMap) {
+        std::vector<double> phaseLinear(static_cast<size_t>(positive.ascanLen), 0.0);
+        for (int i = 0; i < positive.ascanLen; ++i) {
+            phaseLinear[static_cast<size_t>(i)] =
+                0.5 * (phasePositive[static_cast<size_t>(i)] + phaseNegative[static_cast<size_t>(i)]);
+        }
+        if (phaseLinear.back() < phaseLinear.front()) {
+            for (double &value : phaseLinear)
+                value = -value;
+        }
+
+        const int validStart = options.trimLeft;
+        const int validEnd = positive.ascanLen - options.trimRight;
+        std::vector<double> validIndices;
+        std::vector<double> validPhase;
+        validIndices.reserve(static_cast<size_t>(validEnd - validStart));
+        validPhase.reserve(static_cast<size_t>(validEnd - validStart));
+        for (int i = validStart; i < validEnd; ++i) {
+            validIndices.push_back(static_cast<double>(i));
+            validPhase.push_back(phaseLinear[static_cast<size_t>(i)]);
+        }
+
+        fit = fitMonotonicPhase(validIndices, validPhase, options.polyDegree);
+        if (!fit.ok)
+            return failure(fit.errorMessage);
+
+        std::vector<double> resampleDouble;
+        if (!interpolateResampleIndices(fit.fittedPhase,
+                                        validIndices,
+                                        positive.ascanLen,
+                                        &resampleDouble)) {
+            return failure(QStringLiteral("相位反插值失败，无法生成重采样索引。"));
+        }
+
+        resampleIndices.assign(static_cast<size_t>(positive.ascanLen), 0.0f);
+        for (int i = 0; i < positive.ascanLen; ++i)
+            resampleIndices[static_cast<size_t>(i)] =
+                static_cast<float>(resampleDouble[static_cast<size_t>(i)]);
+
+        diagnostics = buildGenerateDiagnostics(options,
+                                               positive,
+                                               negative,
+                                               &background,
+                                               phasePositive,
+                                               phaseNegative,
+                                               phaseLinear,
+                                               fit,
+                                               resampleIndices);
+
+        if (!writeResampleIndices(options.outputPath, resampleIndices, diagnostics, &errorMessage))
+            return failure(errorMessage);
+        if (!writeDiagnostics(options.diagnosticsPath, diagnostics, &errorMessage))
+            return failure(errorMessage);
     }
-    if (phaseLinear.back() < phaseLinear.front()) {
-        for (double &value : phaseLinear)
-            value = -value;
+
+    std::vector<float> dispersionPhase;
+    QJsonObject dispersionDiagnostics;
+    int positivePeakIndex = 0;
+    int negativePeakIndex = 0;
+    if (options.generateDispersionCorrection) {
+        std::vector<double> positiveDispersionSpectrum = positiveSpectrum;
+        std::vector<double> negativeDispersionSpectrum = negativeSpectrum;
+        const bool usedGeneratedKLinearMap =
+            options.generateKLinearMap && !options.dispersionInputAlreadyKLinear && !resampleIndices.empty();
+        if (usedGeneratedKLinearMap) {
+            if (!applyResampleIndices(positiveSpectrum,
+                                      resampleIndices,
+                                      &positiveDispersionSpectrum,
+                                      &errorMessage)
+                || !applyResampleIndices(negativeSpectrum,
+                                         resampleIndices,
+                                         &negativeDispersionSpectrum,
+                                         &errorMessage)) {
+                return failure(errorMessage);
+            }
+        } else if (!options.dispersionInputAlreadyKLinear && !options.generateKLinearMap) {
+            return failure(QStringLiteral("只计算色散修正时，必须确认输入数据已经是波数线性化后的数据。"));
+        }
+
+        std::vector<double> dispersionPhasePositive;
+        if (!unwrappedPhase(positiveDispersionSpectrum, &dispersionPhasePositive, &errorMessage))
+            return failure(errorMessage);
+        std::vector<double> dispersionPhaseNegative;
+        if (!unwrappedPhase(negativeDispersionSpectrum, &dispersionPhaseNegative, &errorMessage))
+            return failure(errorMessage);
+
+        errorMessage.clear();
+        positivePeakIndex = dominantMirrorPeakIndex(positiveDispersionSpectrum, &errorMessage);
+        if (!errorMessage.isEmpty())
+            return failure(errorMessage);
+        errorMessage.clear();
+        negativePeakIndex = dominantMirrorPeakIndex(negativeDispersionSpectrum, &errorMessage);
+        if (!errorMessage.isEmpty())
+            return failure(errorMessage);
+
+        const int ascanLen = positive.ascanLen;
+        const double targetPeakIndex =
+            0.5 * (static_cast<double>(positivePeakIndex) + static_cast<double>(negativePeakIndex));
+        const double twoPi = 6.28318530717958647692;
+        std::vector<double> rawDispersion(static_cast<size_t>(ascanLen), 0.0);
+        for (int i = 0; i < ascanLen; ++i) {
+            const double positiveShifted =
+                dispersionPhasePositive[static_cast<size_t>(i)]
+                + twoPi * (targetPeakIndex - static_cast<double>(positivePeakIndex))
+                    * static_cast<double>(i) / static_cast<double>(ascanLen);
+            const double negativeShifted =
+                dispersionPhaseNegative[static_cast<size_t>(i)]
+                + twoPi * (targetPeakIndex - static_cast<double>(negativePeakIndex))
+                    * static_cast<double>(i) / static_cast<double>(ascanLen);
+            rawDispersion[static_cast<size_t>(i)] = 0.5 * (positiveShifted - negativeShifted);
+        }
+
+        std::vector<double> detrendedDispersion;
+        if (!subtractLinearTrend(rawDispersion,
+                                 options.trimLeft,
+                                 options.trimRight,
+                                 &detrendedDispersion,
+                                 &errorMessage)) {
+            return failure(errorMessage);
+        }
+        const std::vector<double> smoothedDispersion =
+            smoothDispersionPhase(detrendedDispersion, options.polyDegree);
+
+        dispersionPhase.assign(static_cast<size_t>(ascanLen), 0.0f);
+        for (int i = 0; i < ascanLen; ++i)
+            dispersionPhase[static_cast<size_t>(i)] =
+                static_cast<float>(smoothedDispersion[static_cast<size_t>(i)]);
+
+        dispersionDiagnostics = buildDispersionDiagnostics(options,
+                                                           positive,
+                                                           negative,
+                                                           &background,
+                                                           positivePeakIndex,
+                                                           negativePeakIndex,
+                                                           targetPeakIndex,
+                                                           usedGeneratedKLinearMap,
+                                                           dispersionPhase);
+
+        if (!writeDispersionPhase(options.dispersionPath,
+                                  dispersionPhase,
+                                  dispersionDiagnostics,
+                                  &errorMessage)) {
+            return failure(errorMessage);
+        }
+        if (!writeDiagnostics(options.dispersionDiagnosticsPath,
+                              dispersionDiagnostics,
+                              &errorMessage)) {
+            return failure(errorMessage);
+        }
     }
-
-    const int validStart = options.trimLeft;
-    const int validEnd = positive.ascanLen - options.trimRight;
-    std::vector<double> validIndices;
-    std::vector<double> validPhase;
-    validIndices.reserve(static_cast<size_t>(validEnd - validStart));
-    validPhase.reserve(static_cast<size_t>(validEnd - validStart));
-    for (int i = validStart; i < validEnd; ++i) {
-        validIndices.push_back(static_cast<double>(i));
-        validPhase.push_back(phaseLinear[static_cast<size_t>(i)]);
-    }
-
-    const PhaseFit fit = fitMonotonicPhase(validIndices, validPhase, options.polyDegree);
-    if (!fit.ok)
-        return failure(fit.errorMessage);
-
-    std::vector<double> resampleDouble;
-    if (!interpolateResampleIndices(fit.fittedPhase,
-                                    validIndices,
-                                    positive.ascanLen,
-                                    &resampleDouble)) {
-        return failure(QStringLiteral("相位反插值失败，无法生成重采样索引。"));
-    }
-
-    std::vector<float> resampleIndices(static_cast<size_t>(positive.ascanLen), 0.0f);
-    for (int i = 0; i < positive.ascanLen; ++i)
-        resampleIndices[static_cast<size_t>(i)] = static_cast<float>(resampleDouble[static_cast<size_t>(i)]);
-
-    QJsonObject diagnostics = buildGenerateDiagnostics(options,
-                                                       positive,
-                                                       negative,
-                                                       &background,
-                                                       phasePositive,
-                                                       phaseNegative,
-                                                       phaseLinear,
-                                                       fit,
-                                                       resampleIndices);
-
-    if (!writeResampleIndices(options.outputPath, resampleIndices, diagnostics, &errorMessage))
-        return failure(errorMessage);
-    if (!writeDiagnostics(options.diagnosticsPath, diagnostics, &errorMessage))
-        return failure(errorMessage);
 
     Result result;
     result.ok = true;
     result.outputPath = options.outputPath;
     result.diagnosticsPath = options.diagnosticsPath;
+    result.dispersionPath = options.dispersionPath;
+    result.dispersionDiagnosticsPath = options.dispersionDiagnosticsPath;
     result.ascanLen = positive.ascanLen;
     result.lineCountPositive = positive.lineCount;
     result.lineCountNegative = negative.lineCount;
+    result.kLinearMapGenerated = options.generateKLinearMap;
+    result.dispersionGenerated = options.generateDispersionCorrection;
     result.polyDegree = fit.selectedDegree;
     result.requestedPolyDegree = fit.requestedDegree;
     result.polyDegreeAutoDowngraded = fit.autoDowngraded;
     result.resampleIndices.swap(resampleIndices);
-    result.diagnostics = diagnostics;
+    result.dispersionPhase.swap(dispersionPhase);
+    result.positivePeakIndex = positivePeakIndex;
+    result.negativePeakIndex = negativePeakIndex;
+    result.diagnostics = options.generateKLinearMap ? diagnostics : dispersionDiagnostics;
     result.correctionRmsSamples = diagnostics.value(QStringLiteral("correction_rms_samples")).toDouble();
     result.correctionMaxAbsSamples = diagnostics.value(QStringLiteral("correction_max_abs_samples")).toDouble();
+    result.dispersionRmsRadians =
+        dispersionDiagnostics.value(QStringLiteral("dispersion_phase_rms_rad")).toDouble();
+    result.dispersionMaxAbsRadians =
+        dispersionDiagnostics.value(QStringLiteral("dispersion_phase_max_abs_rad")).toDouble();
     return result;
 }
 
@@ -1251,6 +1677,85 @@ Result importFromIndexFile(const ImportOptions &options)
     result.polyDegree = diagnostics.value(QStringLiteral("poly_degree")).toInt();
     result.requestedPolyDegree = diagnostics.value(QStringLiteral("requested_poly_degree")).toInt();
     result.polyDegreeAutoDowngraded = diagnostics.value(QStringLiteral("poly_degree_auto_downgraded")).toBool();
+    return result;
+}
+
+Result importFromDispersionFile(const ImportDispersionOptions &options)
+{
+    if (options.expectedAscanLen <= 0)
+        return failure(QStringLiteral("当前 AscanLen 无效，无法检查色散相位表。"));
+    if (options.inputPath.isEmpty())
+        return failure(QStringLiteral("请选择一个 .txt 色散相位表。"));
+    if (options.outputPath.isEmpty())
+        return failure(QStringLiteral("色散相位输出路径为空。"));
+    if (options.sweptSourceId.trimmed().isEmpty())
+        return failure(QStringLiteral("当前扫频光源为空，无法导入可绑定的色散标定文件。"));
+
+    QString errorMessage;
+    std::vector<float> phase;
+    if (!readRawDispersionPhaseFile(options.inputPath, &phase, &errorMessage))
+        return failure(errorMessage);
+
+    const int sourceAscanLen = static_cast<int>(phase.size());
+    QJsonObject diagnostics;
+    if (!options.inputDiagnosticsPath.isEmpty()) {
+        if (!readJsonObject(options.inputDiagnosticsPath, &diagnostics, &errorMessage))
+            return failure(errorMessage);
+        if (diagnostics.contains(QStringLiteral("ascan_len"))
+            && diagnostics.value(QStringLiteral("ascan_len")).toInt() != sourceAscanLen) {
+            return failure(QStringLiteral("%1 中的 ascan_len=%2，但所选色散相位表包含 %3 个点。")
+                               .arg(options.inputDiagnosticsPath)
+                               .arg(diagnostics.value(QStringLiteral("ascan_len")).toInt())
+                               .arg(sourceAscanLen));
+        }
+        const QString diagnosticsSourceId =
+            diagnostics.value(QStringLiteral("swept_source_id")).toString().trimmed();
+        if (!diagnosticsSourceId.isEmpty()
+            && !options.sweptSourceId.isEmpty()
+            && diagnosticsSourceId.compare(options.sweptSourceId, Qt::CaseInsensitive) != 0) {
+            return failure(QStringLiteral("%1 对应的激光器为 %2，但当前激光器为 %3。")
+                               .arg(options.inputDiagnosticsPath,
+                                    diagnosticsSourceId,
+                                    options.sweptSourceId));
+        }
+    }
+
+    if (sourceAscanLen != options.expectedAscanLen) {
+        return lengthMismatchFailure(QStringLiteral("%1 中有 %2 个色散相位点，但当前 AscanLen=%3。色散相位表不自动缩放，请选择匹配长度的文件或重新标定。")
+                                         .arg(options.inputPath)
+                                         .arg(sourceAscanLen)
+                                         .arg(options.expectedAscanLen),
+                                     sourceAscanLen);
+    }
+
+    diagnostics.insert(QStringLiteral("imported_from"), QDir::toNativeSeparators(options.inputPath));
+    if (!options.inputDiagnosticsPath.isEmpty())
+        diagnostics.insert(QStringLiteral("source_diagnostics"), QDir::toNativeSeparators(options.inputDiagnosticsPath));
+    diagnostics.insert(QStringLiteral("swept_source_id"), options.sweptSourceId);
+    diagnostics.insert(QStringLiteral("swept_source_name"), options.sweptSourceName);
+    diagnostics.insert(QStringLiteral("import_source_ascan_len"), sourceAscanLen);
+    diagnostics.insert(QStringLiteral("import_target_ascan_len"), options.expectedAscanLen);
+    diagnostics.insert(QStringLiteral("diagnostics_filled_by"), QStringLiteral("KLinearCalibration.cpp"));
+    insertDispersionDiagnostics(&diagnostics, phase, options.outputPath);
+
+    if (!writeDispersionPhase(options.outputPath, phase, diagnostics, &errorMessage))
+        return failure(errorMessage);
+    if (!writeDiagnostics(options.diagnosticsPath, diagnostics, &errorMessage))
+        return failure(errorMessage);
+
+    Result result;
+    result.ok = true;
+    result.dispersionPath = options.outputPath;
+    result.dispersionDiagnosticsPath = options.diagnosticsPath;
+    result.ascanLen = options.expectedAscanLen;
+    result.sourceAscanLen = sourceAscanLen;
+    result.dispersionGenerated = true;
+    result.dispersionPhase.swap(phase);
+    result.diagnostics = diagnostics;
+    result.dispersionRmsRadians =
+        diagnostics.value(QStringLiteral("dispersion_phase_rms_rad")).toDouble();
+    result.dispersionMaxAbsRadians =
+        diagnostics.value(QStringLiteral("dispersion_phase_max_abs_rad")).toDouble();
     return result;
 }
 

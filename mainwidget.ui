@@ -652,11 +652,25 @@
             </layout>
            </item>
            <item>
-            <widget class="QCheckBox" name="CB_softwareKLinear">
-             <property name="text">
-              <string>软件波数线性化</string>
+            <layout class="QHBoxLayout" name="horizontalLayout_38">
+             <property name="bottomMargin">
+              <number>0</number>
              </property>
-            </widget>
+             <item>
+              <widget class="QCheckBox" name="CB_softwareKLinear">
+               <property name="text">
+                <string>软件波数线性化</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="CB_calibratedDispersion">
+               <property name="text">
+                <string>使用标定色散修正</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
            </item>
            <item>
             <layout class="QHBoxLayout" name="horizontalLayout_39">
@@ -1068,7 +1082,7 @@
              <item>
               <widget class="QLabel" name="label_21">
                <property name="text">
-                <string>色散相关</string>
+                <string>手动色散修正</string>
                </property>
               </widget>
              </item>

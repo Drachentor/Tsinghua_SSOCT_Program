@@ -1,5 +1,8 @@
 #include "DeviceSettings.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QSettings>
 #include <QtGlobal>
@@ -25,14 +28,67 @@ bool matchesDevice(const QString &value, const QString &id, const QString &displ
         || value.trimmed().compare(displayName, Qt::CaseInsensitive) == 0;
 }
 
+QString sourceDirectoryPath()
+{
+    return QFileInfo(QString::fromLocal8Bit(__FILE__)).absolutePath();
+}
+
+QString applicationDirectoryPath()
+{
+    const QString appDir = QCoreApplication::applicationDirPath();
+    return appDir.isEmpty() ? sourceDirectoryPath() : appDir;
+}
+
+QString parameterDirectoryForRoot(const QString &root)
+{
+    return QDir(root).filePath(QStringLiteral("parameters"));
+}
+
+QString selectedParametersDirectoryPath()
+{
+    const QString appParameters = parameterDirectoryForRoot(applicationDirectoryPath());
+    if (QFileInfo::exists(appParameters))
+        return appParameters;
+    return parameterDirectoryForRoot(sourceDirectoryPath());
+}
+
+QString ensureDirectory(const QString &path)
+{
+    QDir().mkpath(path);
+    return path;
+}
+
 } // namespace
 
 namespace DeviceSettings {
 
+QString parametersDirectoryPath()
+{
+    return ensureDirectory(selectedParametersDirectoryPath());
+}
+
+QString calibrationDirectoryPath()
+{
+    return ensureDirectory(QDir(parametersDirectoryPath()).filePath(QStringLiteral("calibration")));
+}
+
+QString scanPathDirectoryPath()
+{
+    return ensureDirectory(QDir(parametersDirectoryPath()).filePath(QStringLiteral("scan_path")));
+}
+
+QString scanPathAudioDirectoryPath()
+{
+    return ensureDirectory(QDir(parametersDirectoryPath()).filePath(QStringLiteral("scan_path_audio")));
+}
+
 QString settingsFilePath()
 {
-    return QFileInfo(QString::fromLocal8Bit(__FILE__)).absolutePath()
-        + QStringLiteral("/settings.ini");
+    const QString path = QDir(parametersDirectoryPath()).filePath(QStringLiteral("settings.ini"));
+    const QString legacyPath = QDir(sourceDirectoryPath()).filePath(QStringLiteral("settings.ini"));
+    if (!QFileInfo::exists(path) && QFileInfo::exists(legacyPath))
+        QFile::copy(legacyPath, path);
+    return path;
 }
 
 QString defaultDacDeviceId()

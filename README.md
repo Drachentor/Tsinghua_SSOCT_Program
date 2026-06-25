@@ -96,11 +96,10 @@ powershell -ExecutionPolicy Bypass -File .\tools\deploy_release.ps1 -Configurati
 
 ### -- Ver. 260625 --
 
-1. `mainwidget` / `KLinearCalibration`: 在手动标定流程中新增“进行波数线性化映射”和“计算色散修正”两个选项；可只计算色散修正，此时程序按输入数据已经波数线性化处理。
-2. `mainwidget`: 新增 `CB_calibratedDispersion` 开关；只有勾选“使用标定色散修正”时，实时显示和保存后 FFT 才加载当前扫频光源、当前 `AscanLen` 对应的 `dispersion_phase.txt`。
-3. `KLinearCalibration`: 色散标定结果按 `parameters/calibration/<扫频光源ID>/ascan_<AscanLen>/dispersion_phase.txt` 保存，并用 `dispersion_diagnostics.json` 校验扫频光源和 A-line 长度。
-4. “从文件读取”现在可分别选择 k-linear 重采样表、k-linear 诊断文件、色散相位表、色散诊断文件；每个文件都可留空，因此可以只导入 k-linear、只导入色散，或二者一起导入。
-5. 参数文件目录调整：程序设置保存到 `parameters/settings.ini`，标定文件保存到 `parameters/calibration`，扫描路径文本保存到 `parameters/scan_path`，扫描音频保存到 `parameters/scan_path_audio`。
+1. `mainwidget`: 新增了软件色散修正。
+    1. 可以可只计算色散修正，此时程序按输入数据已经波数线性化处理。
+    2. 色散标定结果按 `parameters/calibration/<扫频光源ID>/ascan_<AscanLen>/dispersion_phase.txt` 保存，并用 `dispersion_diagnostics.json` 校验扫频光源和 A-line 长度。
+    3. 参数文件全都放到了 `./parameters` 目录下。
 
 ### -- Ver. 260623 --
 
